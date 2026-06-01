@@ -208,7 +208,7 @@ export default function App() {
     <div style={{fontFamily:"'Noto Sans JP','Hiragino Sans',sans-serif",minHeight:"100vh",background:"#0d1b2a",color:"#e2e8f0"}}>
 
       {/* Header */}
-      <header style={{background:"linear-gradient(90deg,#0d1b2a,#1a3a5c)",borderBottom:"1px solid #1e3a5f",padding:"0 16px",height:58,display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
+      <header style={{background:"linear-gradient(90deg,#0d1b2a,#1a3a5c)",borderBottom:"1px solid #1e3a5f",padding:"0 10px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <span style={{fontSize:22}}>🔬</span>
           <div>
@@ -231,13 +231,13 @@ export default function App() {
         </nav>
       </header>
 
-      <main style={{maxWidth:1140,margin:"0 auto",padding:"16px 12px"}}>
+      <main style={{maxWidth:1140,margin:"0 auto",padding:"12px 4px",overflowX:"hidden"}}>
 
         {/* Month nav */}
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
           <button onClick={()=>changeMonth(-1)} style={navBtnStyle}>‹</button>
           <div style={{textAlign:"center"}}>
-            <div style={{fontSize:20,fontWeight:800,color:"#e0f2fe"}}>{yr}年 {MONTHS_JA[mo]}</div>
+            <div style={{fontSize:18,fontWeight:800,color:"#e0f2fe"}}>{yr}年 {MONTHS_JA[mo]}</div>
             <div style={{display:"flex",gap:8,justifyContent:"center",marginTop:3,flexWrap:"wrap"}}>
               {Object.entries(SHIFT_DEFS).map(([k,v])=>(
                 <span key={k} style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#94a3b8"}}>
@@ -255,26 +255,26 @@ export default function App() {
             <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",background:"#0a1628"}}>
               {WEEKDAYS.map((w,i)=><div key={w} style={{textAlign:"center",padding:"8px 0",fontSize:11,fontWeight:700,color:i===0?"#f87171":i===6?"#60a5fa":"#64748b"}}>{w}</div>)}
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,background:"#0a1628"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:1,background:"#0a1628"}}>
               {cells.map((d,i)=>{
-                if(!d) return <div key={`e${i}`} style={{background:"#0d1b2a",minHeight:110}}/>;
+                if(!d) return <div key={`e${i}`} style={{background:"#0d1b2a",minHeight:100}}/>;
                 const ds=toStr(yr,mo,d); const dow=(first+d-1)%7;
                 const isHol=HOLIDAYS.has(ds); const shifts=getShiftsForDate(ds); const entry=sched[ds]||{}; const isToday=ds===todayStr;
                 return (
                   <div key={ds} onClick={()=>openModal(ds)}
-                    style={{background:isToday?"#0c2a45":"#111f30",minHeight:110,padding:"5px 6px",cursor:"pointer",borderTop:isToday?"2px solid #0ea5e9":isHol?"2px solid #f87171":"2px solid transparent"}}
+                    style={{background:isToday?"#0c2a45":"#111f30",minHeight:100,padding:"4px 3px",cursor:"pointer",borderTop:isToday?"2px solid #0ea5e9":isHol?"2px solid #f87171":"2px solid transparent"}}
                     onMouseEnter={e=>e.currentTarget.style.background="#162d44"}
                     onMouseLeave={e=>e.currentTarget.style.background=isToday?"#0c2a45":"#111f30"}>
                     <div style={{display:"flex",alignItems:"center",gap:3,marginBottom:4}}>
-                      <span style={{fontWeight:700,fontSize:13,color:isHol?"#f87171":dow===0?"#f87171":dow===6?"#60a5fa":"#cbd5e1"}}>{d}</span>
+                      <span style={{fontWeight:700,fontSize:12,color:isHol?"#f87171":dow===0?"#f87171":dow===6?"#60a5fa":"#cbd5e1"}}>{d}</span>
                       {isHol&&<span style={{fontSize:8,background:"#7f1d1d",color:"#fca5a5",borderRadius:3,padding:"1px 3px"}}>祝</span>}
                       {isToday&&<span style={{fontSize:8,background:"#0ea5e9",color:"white",borderRadius:3,padding:"1px 3px"}}>今日</span>}
                     </div>
                     {shifts.map(sk=>{ const sv=SHIFT_DEFS[sk]; const mem=staff.find(x=>x.id===entry[sk]); return (
                       <div key={sk} style={{borderLeft:`3px solid ${sv.border}`,background:"rgba(255,255,255,0.03)",borderRadius:3,padding:"2px 5px",marginBottom:2,display:"flex",alignItems:"center",gap:3}}>
-                        <span style={{fontSize:9}}>{sv.icon}</span>
-                        <span style={{fontSize:9,color:sv.border,fontWeight:700,minWidth:18}}>{sv.short}</span>
-                        <span style={{fontSize:9,color:mem?"#cbd5e1":"#475569",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{mem?mem.name.split(" ")[0]:"未定"}</span>
+                        
+                        <span style={{fontSize:8,color:sv.border,fontWeight:700,minWidth:14}}>{sv.short}</span>
+                        <span style={{fontSize:9,color:mem?"#cbd5e1":"#475569",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{mem?mem.name.split(" ")[0].slice(0,2):"？"}</span>
                       </div>
                     ); })}
                   </div>
