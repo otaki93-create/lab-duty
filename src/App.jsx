@@ -1,4 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+
+
+// ─── localStorage ヘルパー ─────────────────────────────────────────
+const LS_KEY = "labDutyData_v1";
+const LS_URL  = "labDutyGasUrl";
+function lsSave(data){ try{ localStorage.setItem(LS_KEY,JSON.stringify(data)); }catch(e){} }
+function lsLoad(){ try{ const r=localStorage.getItem(LS_KEY); return r?JSON.parse(r):null; }catch(e){ return null; } }
+function lsSaveUrl(url){ try{ localStorage.setItem(LS_URL,url); }catch(e){} }
+function lsLoadUrl(){ try{ return localStorage.getItem(LS_URL)||""; }catch(e){ return ""; } }
 
 // ─── 祝日 ──────────────────────────────────────────────────────────
 const HOLIDAYS = new Set([
@@ -36,8 +45,8 @@ const COLOR_OPTIONS=[
 const SHIFT_DEFS={
   nisoku: {label:"日直",  color:"#FF9500", bg:"#FFF3E0", icon:"☀️"},
   junya:  {label:"準夜勤",color:"#007AFF", bg:"#EEF4FF", icon:"🌙"},
-  oncallA:{label:"待機A", color:"#34C759", bg:"#EDFBF0", icon:"📗"},
-  oncallB:{label:"待機B", color:"#AF52DE", bg:"#F5EEFF", icon:"📘"},
+  oncallA:{label:"拘束A", color:"#34C759", bg:"#EDFBF0", icon:"📗"},
+  oncallB:{label:"拘束B", color:"#AF52DE", bg:"#F5EEFF", icon:"📘"},
 };
 const WEEKDAY_SHIFTS=["junya","oncallA","oncallB"];
 const WEEKEND_SHIFTS=["nisoku","junya","oncallA","oncallB"];
@@ -81,15 +90,21 @@ const MJ=["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月"
 
 // ════════════════════════════════════════════════════════════════════
 export default function App(){
-  const m0=buildMaster(INITIAL_STAFF);
-  const [staff,  setStaff  ]=useState(INITIAL_STAFF);
-  const [wdO,   setWdO    ]=useState(m0.wd);
-  const [weO,   setWeO    ]=useState(m0.we);
+  // ── localStorage から初期値を復元 ──
+  const saved = lsLoad();
+  const m0 = buildMaster(saved?.staff || INITIAL_STAFF);
+
+  const [staff,  setStaff  ]=useState(()=>saved?.staff   || INITIAL_STAFF);
+  const [wdO,   setWdO    ]=useState(()=>saved?.wdO      || m0.wd);
+  const [weO,   setWeO    ]=useState(()=>saved?.weO      || m0.we);
   const [yr,    setYr     ]=useState(today.getFullYear());
   const [mo,    setMo     ]=useState(today.getMonth());
-  const [sched, setSched  ]=useState(()=>genSched(today.getFullYear(),today.getMonth(),m0.wd,m0.we));
+  const [sched, setSched  ]=useState(()=>{
+    const base=genSched(today.getFullYear(),today.getMonth(), saved?.wdO||m0.wd, saved?.weO||m0.we);
+    return saved?.sched ? {...base,...saved.sched} : base;
+  });
   const [selDs, setSelDs  ]=useState(todayStr);
-  const [tab,   setTab    ]=useState("cal"); // cal | list | stats | notif
+  const [tab,   setTab    ]=useState("cal");
   const [notifs,setNotifs ]=useState([]);
 
   // モーダル類
@@ -109,9 +124,24 @@ export default function App(){
   const [dWE,setDWE]=useState(null);
 
   // 同期
-  const [gasUrl,   setGasUrl   ]=useState("");
+  const [gasUrl,   setGasUrl   ]=useState(()=>lsLoadUrl());
   const [syncSt,   setSyncSt   ]=useState("idle");
   const [syncMsg,  setSyncMsg  ]=useState("");
+  const [autoSync, setAutoSync ]=useState(()=>!!lsLoadUrl()); // URLあれば自動同期ON
+  const syncingRef = useRef(false); // 多重実行防止
+
+  // ── データ変化時にlocalStorageへ自動保存 ──
+  useEffect(()=>{
+    lsSave({staff,sched,wdO,weO});
+  },[staff,sched,wdO,weO]);
+
+  // ── GAS URLをlocalStorageへ保存 ──
+  useEffect(()=>{ lsSaveUrl(gasUrl); },[gasUrl]);
+
+  // ── 起動時にGASから自動読み込み ──
+  useEffect(()=>{
+    if(gasUrl && autoSync) autoLoad();
+  },[]); // 初回のみ
 
   function note(msg){setNotifs(p=>[{id:Date.now(),msg,time:new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})},...p].slice(0,20));}
 
@@ -127,9 +157,11 @@ export default function App(){
   // ── シフト編集 ──
   function openEdit(ds){setEditData({...(sched[ds]||{})});setSelDs(ds);setEditOpen(true);}
   function saveEdit(){
-    setSched(prev=>({...prev,[selDs]:{...editData}}));
+    const newSched={...sched,[selDs]:{...editData}};
+    setSched(newSched);
     const names=getShifts(selDs).map(k=>{const m=staff.find(x=>x.id===editData[k]);return m?`${SHIFT_DEFS[k].icon}${m.name}`:null;}).filter(Boolean).join(" ");
     note(`${selDs} 更新 (${names})`);setEditOpen(false);
+    if(gasUrl&&autoSync) autoSave({sched:newSched});
   }
 
   // ── メンバー管理 ──
@@ -137,17 +169,20 @@ export default function App(){
   function startEdit(s){setEditMember(s);setMForm({name:s.name,color:s.color});}
   function saveMember(){
     if(!mForm.name.trim())return;
+    let newStaff;
     if(editMember){
-      // スタッフ情報更新 → スケジュールも即反映（IDはそのまま）
-      setStaff(prev=>prev.map(s=>s.id===editMember.id?{...s,name:mForm.name.trim(),color:mForm.color}:s));
+      newStaff=staff.map(s=>s.id===editMember.id?{...s,name:mForm.name.trim(),color:mForm.color}:s);
+      setStaff(newStaff);
       note(`「${mForm.name.trim()}」を更新しました`);
     }else{
       if(staff.length>=MAX_STAFF)return;
       const ns={id:Date.now(),name:mForm.name.trim(),color:mForm.color};
-      setStaff(prev=>[...prev,ns]);
+      newStaff=[...staff,ns];
+      setStaff(newStaff);
       note(`「${mForm.name.trim()}」を追加しました`);
     }
     setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[0]});
+    if(gasUrl&&autoSync) autoSave({staff:newStaff});
   }
   function delMember(id){
     const m=staff.find(s=>s.id===id);
@@ -169,23 +204,28 @@ export default function App(){
   function remMR(type,i){(type==="wd"?setDWD:setDWE)(p=>p.filter((_,j)=>j!==i));}
   function movMR(type,i,d){(type==="wd"?setDWD:setDWE)(p=>{const a=[...p],n=i+d;if(n<0||n>=a.length)return a;[a[i],a[n]]=[a[n],a[i]];return a;});}
   function saveMaster(){
-    setWdO(dWD);setWeO(dWE);
-    setSched(prev=>({...prev,...genSched(yr,mo,dWD,dWE)}));
+    const newSched={...sched,...genSched(yr,mo,dWD,dWE)};
+    setWdO(dWD);setWeO(dWE);setSched(newSched);
     note("シフトマスターを更新し今月を再生成しました");closeMaster();
+    if(gasUrl&&autoSync) autoSave({wdO:dWD,weO:dWE,sched:newSched});
   }
 
   // ── 同期 ──
+  // 手動読み込み
   async function doLoad(){
     if(!gasUrl.trim()){setSyncMsg("URLを入力してください");setSyncSt("error");return;}
     setSyncSt("loading");setSyncMsg("読み込み中...");
     try{
       const r=await fetch(`${gasUrl.trim()}?action=load`);const j=await r.json();
       if(j.error)throw new Error(j.error);
-      if(j.staff)setStaff(j.staff);if(j.sched)setSched(j.sched);
-      if(j.wdOrder)setWdO(j.wdOrder);if(j.weOrder)setWeO(j.weOrder);
+      if(j.staff){setStaff(j.staff);} if(j.sched){setSched(j.sched);}
+      if(j.wdOrder){setWdO(j.wdOrder);} if(j.weOrder){setWeO(j.weOrder);}
+      // localStorageにも保存
+      lsSave({staff:j.staff||staff, sched:j.sched||sched, wdO:j.wdOrder||wdO, weO:j.weOrder||weO});
       setSyncSt("ok");setSyncMsg("✅ 読み込み完了");note("スプレッドシートから読み込みました");
     }catch(e){setSyncSt("error");setSyncMsg(`❌ ${e.message}`);}
   }
+  // 手動保存
   async function doSave(){
     if(!gasUrl.trim()){setSyncMsg("URLを入力してください");setSyncSt("error");return;}
     setSyncSt("loading");setSyncMsg("保存中...");
@@ -194,6 +234,41 @@ export default function App(){
       const j=await r.json();if(j.error)throw new Error(j.error);
       setSyncSt("ok");setSyncMsg("✅ 保存完了");note("スプレッドシートに保存しました");
     }catch(e){setSyncSt("error");setSyncMsg(`❌ ${e.message}`);}
+  }
+  // 起動時の自動読み込み
+  async function autoLoad(){
+    if(syncingRef.current)return; syncingRef.current=true;
+    setSyncSt("loading");
+    try{
+      const r=await fetch(`${gasUrl.trim()}?action=load`);const j=await r.json();
+      if(j.error)throw new Error(j.error);
+      if(j.staff)setStaff(j.staff); if(j.sched)setSched(prev=>({...prev,...j.sched}));
+      if(j.wdOrder)setWdO(j.wdOrder); if(j.weOrder)setWeO(j.weOrder);
+      lsSave({staff:j.staff||staff, sched:j.sched||sched, wdO:j.wdOrder||wdO, weO:j.weOrder||weO});
+      setSyncSt("ok");setSyncMsg("✅ 起動時に最新データを読み込みました");
+      note("起動時にスプレッドシートから自動読み込みしました");
+    }catch(e){
+      setSyncSt("error");setSyncMsg("⚠️ 自動読み込み失敗（オフラインの可能性）");
+    } finally{ syncingRef.current=false; }
+  }
+  // 変更後の自動保存（差分のみ上書き）
+  async function autoSave(overrides={}){
+    if(!gasUrl.trim()||syncingRef.current)return;
+    syncingRef.current=true;
+    setSyncSt("loading");
+    try{
+      const payload={action:"save",
+        staff:   overrides.staff  ||staff,
+        sched:   overrides.sched  ||sched,
+        wdOrder: overrides.wdO    ||wdO,
+        weOrder: overrides.weO    ||weO,
+      };
+      const r=await fetch(gasUrl.trim(),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+      const j=await r.json();if(j.error)throw new Error(j.error);
+      setSyncSt("ok");setSyncMsg("✅ 自動保存しました");
+    }catch(e){
+      setSyncSt("error");setSyncMsg("⚠️ 自動保存失敗（次回手動保存してください）");
+    } finally{ syncingRef.current=false; }
   }
 
   // ── レンダリング用 ──
@@ -253,7 +328,7 @@ export default function App(){
             <button onClick={()=>chMo(-1)} style={{background:"none",border:"none",fontSize:26,color:"#007AFF",cursor:"pointer",lineHeight:1,padding:"0 6px"}}>‹</button>
             <div style={{textAlign:"center"}}>
               <div style={{fontSize:22,fontWeight:700,color:"#1C1C1E"}}>{yr}年 {MJ[mo]}</div>
-              <div style={{fontSize:11,color:"#8E8E93",marginTop:2}}>{selIsWE?"土日祝：日直・準夜勤・待機A・待機B":"平日：準夜勤・待機A・待機B"}</div>
+              <div style={{fontSize:11,color:"#8E8E93",marginTop:2}}>{selIsWE?"土日祝：日直・準夜勤・拘束A・拘束B":"平日：準夜勤・拘束A・拘束B"}</div>
             </div>
             <button onClick={()=>chMo(1)} style={{background:"none",border:"none",fontSize:26,color:"#007AFF",cursor:"pointer",lineHeight:1,padding:"0 6px"}}>›</button>
           </div>
@@ -566,6 +641,17 @@ export default function App(){
           <div style={{fontSize:13,color:"#8E8E93",marginBottom:6}}>Apps Script URL</div>
           <input value={gasUrl} onChange={e=>setGasUrl(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec"
             style={{width:"100%",padding:"13px 14px",background:"#F2F2F7",border:"none",borderRadius:12,fontSize:14,color:"#1C1C1E",outline:"none",boxSizing:"border-box",marginBottom:10}}/>
+          {/* 自動同期トグル */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"#F9F9FB",borderRadius:12,padding:"12px 14px",marginBottom:10,border:"1px solid #E5E5EA"}}>
+            <div>
+              <div style={{fontSize:14,fontWeight:600,color:"#1C1C1E"}}>自動同期</div>
+              <div style={{fontSize:11,color:"#8E8E93",marginTop:1}}>起動時の読み込み・保存時の自動送信</div>
+            </div>
+            <div onClick={()=>setAutoSync(p=>!p)}
+              style={{width:50,height:28,borderRadius:14,background:autoSync?"#34C759":"#E5E5EA",cursor:"pointer",position:"relative",transition:"background 0.2s",flexShrink:0}}>
+              <div style={{position:"absolute",top:3,left:autoSync?24:3,width:22,height:22,borderRadius:"50%",background:"white",boxShadow:"0 1px 4px rgba(0,0,0,0.2)",transition:"left 0.2s"}}/>
+            </div>
+          </div>
           {syncMsg&&(
             <div style={{padding:"9px 12px",borderRadius:10,marginBottom:10,fontSize:13,fontWeight:600,
               background:syncSt==="ok"?"#E8F5E9":syncSt==="error"?"#FFEBEE":"#FFFDE7",
