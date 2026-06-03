@@ -59,44 +59,46 @@ function firstDow(y,m)   { return new Date(y,m,1).getDay(); }
 function toStr(y,m,d)    { return `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`; }
 
 function genSched(y,m,wdO,weO,staffList){
-  const n=daysInMonth(y,m); const s={};
-  // 平日・土日祝でカーソルを完全に分離
-  // 拘束A・拘束Bはそれぞれ独立したカーソルで管理
-  const wdC={junya:0, oncallA:0, oncallB:0};
-  const weC={nisoku:0, junya:0, oncallA:0, oncallB:0};
+  const n=daysInMonth(y,m); const sched={};
+
   function q(o,k){ return o.filter(r=>r.shift===k).map(r=>r.staffId); }
+  function byType(type){ return (staffList||[]).filter(s=>s.oncallType===type).map(s=>s.id); }
 
-  // 拘束キュー: マスター設定があればそれを使用、なければoncallTypeで自動生成
-  function buildQueue(order, shiftKey, typeKey, staffList){
-    const fromMaster=q(order, shiftKey);
-    if(fromMaster.length>0) return fromMaster;
-    return (staffList||[]).filter(s=>s.oncallType===typeKey).map(s=>s.id);
-  }
+  // 平日キュー
+  const WD_JUNYA   = q(wdO,"junya").length   ? q(wdO,"junya")   : (staffList||[]).map(s=>s.id);
+  const WD_ONCALLA = q(wdO,"oncallA").length  ? q(wdO,"oncallA") : byType("A");
+  const WD_ONCALLB = q(wdO,"oncallB").length  ? q(wdO,"oncallB") : byType("B");
 
-  const wq={
-    junya:   q(wdO,"junya"),
-    oncallA: buildQueue(wdO,"oncallA","A",staffList),
-    oncallB: buildQueue(wdO,"oncallB","B",staffList),
-  };
-  const eq={
-    nisoku:  q(weO,"nisoku"),
-    junya:   q(weO,"junya"),
-    oncallA: buildQueue(weO,"oncallA","A",staffList),
-    oncallB: buildQueue(weO,"oncallB","B",staffList),
-  };
+  // 土日祝キュー
+  const WE_NISOKU  = q(weO,"nisoku").length   ? q(weO,"nisoku")  : (staffList||[]).map(s=>s.id);
+  const WE_JUNYA   = q(weO,"junya").length    ? q(weO,"junya")   : (staffList||[]).map(s=>s.id);
+  const WE_ONCALLA = q(weO,"oncallA").length  ? q(weO,"oncallA") : byType("A");
+  const WE_ONCALLB = q(weO,"oncallB").length  ? q(weO,"oncallB") : byType("B");
+
+  // カーソル（平日・土日祝・拘束A・拘束Bをすべて独立管理）
+  let wd_junya=0, wd_oncallA=0, wd_oncallB=0;
+  let we_nisoku=0, we_junya=0, we_oncallA=0, we_oncallB=0;
+
   for(let d=1;d<=n;d++){
-    const ds=toStr(y,m,d); const isWE=isHolidayOrWeekend(ds);
+    const ds=toStr(y,m,d);
+    const isWE=isHolidayOrWeekend(ds);
     const e={};
-    const shifts=isWE?WEEKEND_SHIFTS:WEEKDAY_SHIFTS;
-    const queues=isWE?eq:wq;
-    const cursors=isWE?weC:wdC;
-    shifts.forEach(k=>{
-      const qq=queues[k]; if(!qq||!qq.length)return;
-      e[k]=qq[cursors[k]%qq.length]; cursors[k]++;
-    });
-    s[ds]=e;
+
+    if(isWE){
+      // 土日祝: 日直・準夜勤・拘束A・拘束B
+      if(WE_NISOKU.length)  { e.nisoku  = WE_NISOKU[we_nisoku   % WE_NISOKU.length];  we_nisoku++;  }
+      if(WE_JUNYA.length)   { e.junya   = WE_JUNYA[we_junya     % WE_JUNYA.length];   we_junya++;   }
+      if(WE_ONCALLA.length) { e.oncallA = WE_ONCALLA[we_oncallA % WE_ONCALLA.length]; we_oncallA++; }
+      if(WE_ONCALLB.length) { e.oncallB = WE_ONCALLB[we_oncallB % WE_ONCALLB.length]; we_oncallB++; }
+    } else {
+      // 平日: 準夜勤・拘束A・拘束B
+      if(WD_JUNYA.length)   { e.junya   = WD_JUNYA[wd_junya     % WD_JUNYA.length];   wd_junya++;   }
+      if(WD_ONCALLA.length) { e.oncallA = WD_ONCALLA[wd_oncallA % WD_ONCALLA.length]; wd_oncallA++; }
+      if(WD_ONCALLB.length) { e.oncallB = WD_ONCALLB[wd_oncallB % WD_ONCALLB.length]; wd_oncallB++; }
+    }
+    sched[ds]=e;
   }
-  return s;
+  return sched;
 }
 function buildMaster(staff){
   const wd=[],we=[];
