@@ -28,12 +28,12 @@ function isHolidayOrWeekend(ds){
 // ─── 定数 ──────────────────────────────────────────────────────────
 const MAX_STAFF=30;
 const INITIAL_STAFF=[
-  {id:1,name:"田中 一郎",color:"#007AFF"},
-  {id:2,name:"佐藤 花子",color:"#34C759"},
-  {id:3,name:"山田 太郎",color:"#FF9500"},
-  {id:4,name:"鈴木 美咲",color:"#FF3B30"},
-  {id:5,name:"中村 健二",color:"#AF52DE"},
-  {id:6,name:"伊藤 直子",color:"#FF2D55"},
+  {id:1,name:"田中 一郎",color:"#007AFF",oncallType:"A"},
+  {id:2,name:"佐藤 花子",color:"#34C759",oncallType:"A"},
+  {id:3,name:"山田 太郎",color:"#FF9500",oncallType:"B"},
+  {id:4,name:"鈴木 美咲",color:"#FF3B30",oncallType:"B"},
+  {id:5,name:"中村 健二",color:"#AF52DE",oncallType:"A"},
+  {id:6,name:"伊藤 直子",color:"#FF2D55",oncallType:"B"},
 ];
 const COLOR_OPTIONS=[
   "#007AFF","#34C759","#FF9500","#FF3B30","#AF52DE","#FF2D55",
@@ -57,17 +57,46 @@ function daysInMonth(y,m){ return new Date(y,m+1,0).getDate(); }
 function firstDow(y,m)   { return new Date(y,m,1).getDay(); }
 function toStr(y,m,d)    { return `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`; }
 
-function genSched(y,m,wdO,weO){
+function genSched(y,m,wdO,weO,staffList){
   const n=daysInMonth(y,m); const s={};
-  const c={junya:0,oncallA:0,oncallB:0,nisoku:0};
+  // 平日・土日祝でカーソルを完全に分離
+  const wdC={junya:0,oncallA:0,oncallB:0};
+  const weC={nisoku:0,junya:0,oncallA:0,oncallB:0};
   function q(o,k){ return o.filter(r=>r.shift===k).map(r=>r.staffId); }
-  const wq={junya:q(wdO,"junya"),oncallA:q(wdO,"oncallA"),oncallB:q(wdO,"oncallB")};
-  const eq={nisoku:q(weO,"nisoku"),junya:q(weO,"junya"),oncallA:q(weO,"oncallA"),oncallB:q(weO,"oncallB")};
+
+  // oncallType が設定されている場合はtypeで自動振り分け
+  // junya のマスターに登録されたメンバーが順番に割り当て
+  // oncallA には oncallType:"A" のメンバー、oncallB には "B" のメンバーを使う
+  function buildOncallQueue(order, shiftKey, staffList){
+    const fromMaster = q(order, shiftKey);
+    if(fromMaster.length > 0) return fromMaster;
+    // マスター未設定の場合はtypeで自動生成
+    const typeKey = shiftKey === "oncallA" ? "A" : "B";
+    return (staffList||[]).filter(s=>s.oncallType===typeKey).map(s=>s.id);
+  }
+
+  const wq={
+    junya:   q(wdO,"junya"),
+    oncallA: buildOncallQueue(wdO,"oncallA",staffList),
+    oncallB: buildOncallQueue(wdO,"oncallB",staffList),
+  };
+  const eq={
+    nisoku:  q(weO,"nisoku"),
+    junya:   q(weO,"junya"),
+    oncallA: buildOncallQueue(weO,"oncallA",staffList),
+    oncallB: buildOncallQueue(weO,"oncallB",staffList),
+  };
   for(let d=1;d<=n;d++){
     const ds=toStr(y,m,d); const isWE=isHolidayOrWeekend(ds);
-    const e={}; (isWE?WEEKEND_SHIFTS:WEEKDAY_SHIFTS).forEach(k=>{
-      const qq=(isWE?eq:wq)[k]; if(!qq||!qq.length)return; e[k]=qq[c[k]%qq.length]; c[k]++;
-    }); s[ds]=e;
+    const e={};
+    const shifts=isWE?WEEKEND_SHIFTS:WEEKDAY_SHIFTS;
+    const queues=isWE?eq:wq;
+    const cursors=isWE?weC:wdC;
+    shifts.forEach(k=>{
+      const qq=queues[k]; if(!qq||!qq.length)return;
+      e[k]=qq[cursors[k]%qq.length]; cursors[k]++;
+    });
+    s[ds]=e;
   }
   return s;
 }
@@ -100,7 +129,8 @@ export default function App(){
   const [yr,    setYr     ]=useState(today.getFullYear());
   const [mo,    setMo     ]=useState(today.getMonth());
   const [sched, setSched  ]=useState(()=>{
-    const base=genSched(today.getFullYear(),today.getMonth(), saved?.wdO||m0.wd, saved?.weO||m0.we);
+    const initStaff=saved?.staff||INITIAL_STAFF;
+    const base=genSched(today.getFullYear(),today.getMonth(), saved?.wdO||m0.wd, saved?.weO||m0.we, initStaff);
     return saved?.sched ? {...base,...saved.sched} : base;
   });
   const [selDs, setSelDs  ]=useState(todayStr);
@@ -116,7 +146,7 @@ export default function App(){
 
   // メンバーフォーム
   const [editMember,setEditMember]=useState(null);
-  const [mForm,     setMForm     ]=useState({name:"",color:COLOR_OPTIONS[0]});
+  const [mForm,     setMForm     ]=useState({name:"",color:COLOR_OPTIONS[0],oncallType:"A"});
   const [delConf,   setDelConf   ]=useState(null);
 
   // マスターフォーム
@@ -150,7 +180,7 @@ export default function App(){
     let nm=mo+d,ny=yr;
     if(nm<0){nm=11;ny--;}else if(nm>11){nm=0;ny++;}
     setMo(nm);setYr(ny);
-    setSched(prev=>({...genSched(ny,nm,wdO,weO),...prev}));
+    setSched(prev=>({...genSched(ny,nm,wdO,weO,staff),...prev}));
     setSelDs(toStr(ny,nm,1));
   }
 
@@ -165,23 +195,23 @@ export default function App(){
   }
 
   // ── メンバー管理 ──
-  function startAdd(){setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[staff.length%COLOR_OPTIONS.length]});}
-  function startEdit(s){setEditMember(s);setMForm({name:s.name,color:s.color});}
+  function startAdd(){setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[staff.length%COLOR_OPTIONS.length],oncallType:"A"});}
+  function startEdit(s){setEditMember(s);setMForm({name:s.name,color:s.color,oncallType:s.oncallType||"A"});}
   function saveMember(){
     if(!mForm.name.trim())return;
     let newStaff;
     if(editMember){
-      newStaff=staff.map(s=>s.id===editMember.id?{...s,name:mForm.name.trim(),color:mForm.color}:s);
+      newStaff=staff.map(s=>s.id===editMember.id?{...s,name:mForm.name.trim(),color:mForm.color,oncallType:mForm.oncallType}:s);
       setStaff(newStaff);
       note(`「${mForm.name.trim()}」を更新しました`);
     }else{
       if(staff.length>=MAX_STAFF)return;
-      const ns={id:Date.now(),name:mForm.name.trim(),color:mForm.color};
+      const ns={id:Date.now(),name:mForm.name.trim(),color:mForm.color,oncallType:mForm.oncallType};
       newStaff=[...staff,ns];
       setStaff(newStaff);
       note(`「${mForm.name.trim()}」を追加しました`);
     }
-    setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[0]});
+    setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[0],oncallType:"A"});
     if(gasUrl&&autoSync) autoSave({staff:newStaff});
   }
   function delMember(id){
@@ -204,7 +234,7 @@ export default function App(){
   function remMR(type,i){(type==="wd"?setDWD:setDWE)(p=>p.filter((_,j)=>j!==i));}
   function movMR(type,i,d){(type==="wd"?setDWD:setDWE)(p=>{const a=[...p],n=i+d;if(n<0||n>=a.length)return a;[a[i],a[n]]=[a[n],a[i]];return a;});}
   function saveMaster(){
-    const newSched={...sched,...genSched(yr,mo,dWD,dWE)};
+    const newSched={...sched,...genSched(yr,mo,dWD,dWE,staff)};
     setWdO(dWD);setWeO(dWE);setSched(newSched);
     note("シフトマスターを更新し今月を再生成しました");closeMaster();
     if(gasUrl&&autoSync) autoSave({wdO:dWD,weO:dWE,sched:newSched});
@@ -579,6 +609,23 @@ export default function App(){
                           style={{width:30,height:30,borderRadius:"50%",background:c,cursor:"pointer",border:mForm.color===c?"3px solid white":"3px solid transparent",boxShadow:mForm.color===c?`0 0 0 2.5px ${c}`:"none",transition:"all 0.12s"}}/>
                       ))}
                     </div>
+                    {/* 拘束区分 A/B 選択 */}
+                    <div style={{fontSize:12,color:"#8E8E93",marginBottom:8}}>拘束区分</div>
+                    <div style={{display:"flex",gap:8,marginBottom:16}}>
+                      {["A","B"].map(t=>(
+                        <div key={t} onClick={()=>setMForm(p=>({...p,oncallType:t}))}
+                          style={{flex:1,padding:"10px 0",borderRadius:12,textAlign:"center",cursor:"pointer",fontWeight:700,fontSize:15,
+                            background:mForm.oncallType===t?(t==="A"?"#34C759":"#AF52DE"):"#F2F2F7",
+                            color:mForm.oncallType===t?"white":"#8E8E93",
+                            border:mForm.oncallType===t?`2px solid ${t==="A"?"#34C759":"#AF52DE"}`:"2px solid transparent",
+                            transition:"all 0.15s"}}>
+                          {t==="A"?"📗 拘束A":"📘 拘束B"}
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{fontSize:11,color:"#8E8E93",marginBottom:14,lineHeight:1.6}}>
+                      ※ マスター未設定時は拘束A・Bの区分に従い自動割り当てされます
+                    </div>
                     <div style={{display:"flex",gap:8}}>
                       {editMember&&<button onClick={()=>{setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[0]});}} style={cancelBtn}>キャンセル</button>}
                       <button onClick={saveMember} disabled={!mForm.name.trim()}
@@ -595,7 +642,12 @@ export default function App(){
                 {staff.map((s,idx)=>(
                   <div key={s.id} style={{display:"flex",alignItems:"center",padding:"13px 16px",borderBottom:idx<staff.length-1?"1px solid #F2F2F7":"none",gap:12}}>
                     <div style={{width:38,height:38,borderRadius:"50%",background:s.color+"20",border:`2px solid ${s.color}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,color:s.color,fontWeight:800,flexShrink:0}}>{s.name[0]}</div>
-                    <div style={{flex:1,fontSize:15,fontWeight:500,color:"#1C1C1E"}}>{s.name}</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:15,fontWeight:500,color:"#1C1C1E"}}>{s.name}</div>
+                      <div style={{fontSize:11,color:"white",background:s.oncallType==="A"?"#34C759":"#AF52DE",borderRadius:6,padding:"1px 7px",display:"inline-block",marginTop:2,fontWeight:700}}>
+                        {s.oncallType==="A"?"📗 拘束A":"📘 拘束B"}
+                      </div>
+                    </div>
                     <button onClick={()=>startEdit(s)} style={{background:"#EEF4FF",color:"#007AFF",border:"none",borderRadius:9,padding:"6px 13px",fontSize:13,cursor:"pointer",fontWeight:600,marginRight:4}}>編集</button>
                     {delConf===s.id
                       ?<div style={{display:"flex",gap:5}}>
