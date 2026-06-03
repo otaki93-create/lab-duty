@@ -45,12 +45,12 @@ const COLOR_OPTIONS=[
 const SHIFT_DEFS={
   nisoku: {label:"日直",  color:"#FF9500", bg:"#FFF3E0", icon:"☀️"},
   junya:  {label:"準夜勤",color:"#007AFF", bg:"#EEF4FF", icon:"🌙"},
-  oncallA: {label:"拘束A", color:"#34C759", bg:"#EDFBF0", icon:"📗"},
-  oncallB: {label:"拘束B", color:"#AF52DE", bg:"#F5EEFF", icon:"📘"},
+  oncallA: {label:"拘束A順番",color:"#34C759", bg:"#EDFBF0", icon:"📗"},
+  oncallB: {label:"拘束B順番",color:"#AF52DE", bg:"#F5EEFF", icon:"📘"},
 
 };
-const WEEKDAY_SHIFTS=["junya","oncallA","oncallB"];
-const WEEKEND_SHIFTS=["nisoku","junya","oncallA","oncallB"];
+const WEEKDAY_SHIFTS=["junya","oncall"];
+const WEEKEND_SHIFTS=["nisoku","junya","oncall"];
 function getShifts(ds){ return isHolidayOrWeekend(ds)?WEEKEND_SHIFTS:WEEKDAY_SHIFTS; }
 
 // ─── ユーティリティ ────────────────────────────────────────────────
@@ -62,22 +62,26 @@ function genSched(y,m,wdO,weO,staffList){
   const n=daysInMonth(y,m); const sched={};
 
   function q(o,k){ return o.filter(r=>r.shift===k).map(r=>r.staffId); }
-  function byType(type){ return (staffList||[]).filter(s=>s.oncallType===type).map(s=>s.id); }
+  function byType(t){ return (staffList||[]).filter(s=>s.oncallType===t).map(s=>s.id); }
 
-  // 平日キュー
-  const WD_JUNYA   = q(wdO,"junya").length   ? q(wdO,"junya")   : (staffList||[]).map(s=>s.id);
-  const WD_ONCALLA = q(wdO,"oncallA").length  ? q(wdO,"oncallA") : byType("A");
-  const WD_ONCALLB = q(wdO,"oncallB").length  ? q(wdO,"oncallB") : byType("B");
+  // 準夜勤キュー（平日・土日祝で独立）
+  const WD_JUNYA  = q(wdO,"junya").length  ? q(wdO,"junya")  : (staffList||[]).map(s=>s.id);
+  const WE_NISOKU = q(weO,"nisoku").length  ? q(weO,"nisoku") : (staffList||[]).map(s=>s.id);
+  const WE_JUNYA  = q(weO,"junya").length   ? q(weO,"junya")  : (staffList||[]).map(s=>s.id);
 
-  // 土日祝キュー
-  const WE_NISOKU  = q(weO,"nisoku").length   ? q(weO,"nisoku")  : (staffList||[]).map(s=>s.id);
-  const WE_JUNYA   = q(weO,"junya").length    ? q(weO,"junya")   : (staffList||[]).map(s=>s.id);
-  const WE_ONCALLA = q(weO,"oncallA").length  ? q(weO,"oncallA") : byType("A");
-  const WE_ONCALLB = q(weO,"oncallB").length  ? q(weO,"oncallB") : byType("B");
+  // 拘束はA班・B班の順番リストを別々に管理（マスター or oncallTypeで自動生成）
+  const WD_OCA = q(wdO,"oncallA").length ? q(wdO,"oncallA") : byType("A");
+  const WD_OCB = q(wdO,"oncallB").length ? q(wdO,"oncallB") : byType("B");
+  const WE_OCA = q(weO,"oncallA").length ? q(weO,"oncallA") : byType("A");
+  const WE_OCB = q(weO,"oncallB").length ? q(weO,"oncallB") : byType("B");
 
-  // カーソル（平日・土日祝・拘束A・拘束Bをすべて独立管理）
-  let wd_junya=0, wd_oncallA=0, wd_oncallB=0;
-  let we_nisoku=0, we_junya=0, we_oncallA=0, we_oncallB=0;
+  // カーソル（全て独立した変数で管理）
+  let c_wd_junya=0, c_we_nisoku=0, c_we_junya=0;
+  let c_wd_oca=0, c_wd_ocb=0; // 平日拘束A/Bカーソル
+  let c_we_oca=0, c_we_ocb=0; // 土日祝拘束A/Bカーソル
+  // 拘束の担当フラグ：0=A班の番、1=B班の番（平日・土日祝で独立）
+  let wd_turn=0; // 0:A班 1:B班
+  let we_turn=0; // 0:A班 1:B班
 
   for(let d=1;d<=n;d++){
     const ds=toStr(y,m,d);
@@ -85,16 +89,27 @@ function genSched(y,m,wdO,weO,staffList){
     const e={};
 
     if(isWE){
-      // 土日祝: 日直・準夜勤・拘束A・拘束B
-      if(WE_NISOKU.length)  { e.nisoku  = WE_NISOKU[we_nisoku   % WE_NISOKU.length];  we_nisoku++;  }
-      if(WE_JUNYA.length)   { e.junya   = WE_JUNYA[we_junya     % WE_JUNYA.length];   we_junya++;   }
-      if(WE_ONCALLA.length) { e.oncallA = WE_ONCALLA[we_oncallA % WE_ONCALLA.length]; we_oncallA++; }
-      if(WE_ONCALLB.length) { e.oncallB = WE_ONCALLB[we_oncallB % WE_ONCALLB.length]; we_oncallB++; }
+      // 日直
+      if(WE_NISOKU.length){ e.nisoku=WE_NISOKU[c_we_nisoku%WE_NISOKU.length]; c_we_nisoku++; }
+      // 準夜勤
+      if(WE_JUNYA.length){ e.junya=WE_JUNYA[c_we_junya%WE_JUNYA.length]; c_we_junya++; }
+      // 拘束（1枠）: A班とB班が交互
+      if(we_turn===0){
+        if(WE_OCA.length){ e.oncall=WE_OCA[c_we_oca%WE_OCA.length]; c_we_oca++; }
+      } else {
+        if(WE_OCB.length){ e.oncall=WE_OCB[c_we_ocb%WE_OCB.length]; c_we_ocb++; }
+      }
+      we_turn=we_turn===0?1:0; // 次の土日祝は反対の班
     } else {
-      // 平日: 準夜勤・拘束A・拘束B
-      if(WD_JUNYA.length)   { e.junya   = WD_JUNYA[wd_junya     % WD_JUNYA.length];   wd_junya++;   }
-      if(WD_ONCALLA.length) { e.oncallA = WD_ONCALLA[wd_oncallA % WD_ONCALLA.length]; wd_oncallA++; }
-      if(WD_ONCALLB.length) { e.oncallB = WD_ONCALLB[wd_oncallB % WD_ONCALLB.length]; wd_oncallB++; }
+      // 準夜勤
+      if(WD_JUNYA.length){ e.junya=WD_JUNYA[c_wd_junya%WD_JUNYA.length]; c_wd_junya++; }
+      // 拘束（1枠）: A班とB班が交互
+      if(wd_turn===0){
+        if(WD_OCA.length){ e.oncall=WD_OCA[c_wd_oca%WD_OCA.length]; c_wd_oca++; }
+      } else {
+        if(WD_OCB.length){ e.oncall=WD_OCB[c_wd_ocb%WD_OCB.length]; c_wd_ocb++; }
+      }
+      wd_turn=wd_turn===0?1:0; // 次の平日は反対の班
     }
     sched[ds]=e;
   }
@@ -331,10 +346,10 @@ export default function App(){
 
   // 集計
   const stats={};
-  staff.forEach(s=>{stats[s.id]={nisoku:0,junya:0,oncallA:0,oncallB:0};});
+  staff.forEach(s=>{stats[s.id]={nisoku:0,junya:0,oncall:0};});
   Object.entries(sched).forEach(([ds,e])=>{
     if(!ds.startsWith(`${yr}-${String(mo+1).padStart(2,"0")}`))return;
-    Object.entries(e).forEach(([k,sid])=>{if(stats[sid])stats[sid][k]=(stats[sid][k]||0)+1;});
+    Object.entries(e).forEach(([k,sid])=>{ const sk=(k==='oncallA'||k==='oncallB')?'oncall':k; if(stats[sid])stats[sid][sk]=(stats[sid][sk]||0)+1; });
   });
 
   const syncColor=syncSt==="ok"?"#34C759":syncSt==="error"?"#FF3B30":syncSt==="loading"?"#FF9500":"#8E8E93";
@@ -376,7 +391,7 @@ export default function App(){
             <button onClick={()=>chMo(-1)} style={{background:"none",border:"none",fontSize:26,color:"#007AFF",cursor:"pointer",lineHeight:1,padding:"0 6px"}}>‹</button>
             <div style={{textAlign:"center"}}>
               <div style={{fontSize:22,fontWeight:700,color:"#1C1C1E"}}>{yr}年 {MJ[mo]}</div>
-              <div style={{fontSize:11,color:"#8E8E93",marginTop:2}}>{selIsWE?"土日祝：日直・準夜勤・拘束A・拘束B":"平日：準夜勤・拘束A・拘束B"}</div>
+              <div style={{fontSize:11,color:"#8E8E93",marginTop:2}}>{selIsWE?"土日祝：日直・準夜勤・拘束（A/B交互）":"平日：準夜勤・拘束（A/B交互）"}</div>
             </div>
             <button onClick={()=>chMo(1)} style={{background:"none",border:"none",fontSize:26,color:"#007AFF",cursor:"pointer",lineHeight:1,padding:"0 6px"}}>›</button>
           </div>
@@ -526,7 +541,7 @@ export default function App(){
             </div>
           </div>
           {staff.map(s=>{
-            const cnt=stats[s.id]||{nisoku:0,junya:0,oncallA:0,oncallB:0};
+            const cnt=stats[s.id]||{nisoku:0,junya:0,oncall:0};
             const total=Object.values(cnt).reduce((a,b)=>a+b,0);
             return(
               <div key={s.id} style={{background:"white",borderRadius:16,marginBottom:10,padding:"16px 18px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}}>
