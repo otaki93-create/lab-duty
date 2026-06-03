@@ -43,11 +43,12 @@ const COLOR_OPTIONS=[
   "#0071E3","#1D9BF0","#CA8A04","#DC2626","#7C3AED","#9D174D",
 ];
 const SHIFT_DEFS={
-  nisoku: {label:"日直",  color:"#FF9500", bg:"#FFF3E0", icon:"☀️"},
-  junya:  {label:"準夜勤",color:"#007AFF", bg:"#EEF4FF", icon:"🌙"},
+  nisoku:  {label:"日直",  color:"#FF9500", bg:"#FFF3E0", icon:"☀️"},
+  junya:   {label:"準夜勤",color:"#007AFF", bg:"#EEF4FF", icon:"🌙"},
+  oncall:  {label:"拘束",  color:"#34C759", bg:"#EDFBF0", icon:"📗"},
+  // マスター管理用（順番設定のみ。実際の表示は oncall 1枠）
   oncallA: {label:"拘束A順番",color:"#34C759", bg:"#EDFBF0", icon:"📗"},
   oncallB: {label:"拘束B順番",color:"#AF52DE", bg:"#F5EEFF", icon:"📘"},
-
 };
 const WEEKDAY_SHIFTS=["junya","oncall"];
 const WEEKEND_SHIFTS=["nisoku","junya","oncall"];
