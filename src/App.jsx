@@ -45,11 +45,12 @@ const COLOR_OPTIONS=[
 const SHIFT_DEFS={
   nisoku: {label:"日直",  color:"#FF9500", bg:"#FFF3E0", icon:"☀️"},
   junya:  {label:"準夜勤",color:"#007AFF", bg:"#EEF4FF", icon:"🌙"},
-  oncall: {label:"拘束",  color:"#34C759", bg:"#EDFBF0", icon:"📗"},
+  oncallA: {label:"拘束A", color:"#34C759", bg:"#EDFBF0", icon:"📗"},
+  oncallB: {label:"拘束B", color:"#AF52DE", bg:"#F5EEFF", icon:"📘"},
 
 };
-const WEEKDAY_SHIFTS=["junya","oncall"];
-const WEEKEND_SHIFTS=["nisoku","junya","oncall"];
+const WEEKDAY_SHIFTS=["junya","oncallA","oncallB"];
+const WEEKEND_SHIFTS=["nisoku","junya","oncallA","oncallB"];
 function getShifts(ds){ return isHolidayOrWeekend(ds)?WEEKEND_SHIFTS:WEEKDAY_SHIFTS; }
 
 // ─── ユーティリティ ────────────────────────────────────────────────
@@ -60,36 +61,28 @@ function toStr(y,m,d)    { return `${y}-${String(m+1).padStart(2,"0")}-${String(
 function genSched(y,m,wdO,weO,staffList){
   const n=daysInMonth(y,m); const s={};
   // 平日・土日祝でカーソルを完全に分離
-  const wdC={junya:0,oncall:0};
-  const weC={nisoku:0,junya:0,oncall:0};
+  // 拘束A・拘束Bはそれぞれ独立したカーソルで管理
+  const wdC={junya:0, oncallA:0, oncallB:0};
+  const weC={nisoku:0, junya:0, oncallA:0, oncallB:0};
   function q(o,k){ return o.filter(r=>r.shift===k).map(r=>r.staffId); }
 
-  // 拘束キュー: マスター設定があればそれを使用
-  // なければ staffList の oncallType("A"/"B") を交互に並べて自動生成
-  function buildOncallQueue(order, staffList){
-    const fromMaster=q(order,"oncall");
+  // 拘束キュー: マスター設定があればそれを使用、なければoncallTypeで自動生成
+  function buildQueue(order, shiftKey, typeKey, staffList){
+    const fromMaster=q(order, shiftKey);
     if(fromMaster.length>0) return fromMaster;
-    // A・B交互に並べる
-    const aList=(staffList||[]).filter(s=>s.oncallType==="A").map(s=>s.id);
-    const bList=(staffList||[]).filter(s=>s.oncallType==="B").map(s=>s.id);
-    const result=[];
-    const max=Math.max(aList.length,bList.length);
-    // 平日はAから始まり交互、土日はBから始まり交互（マスター設定で上書き可）
-    for(let i=0;i<max;i++){
-      if(i<aList.length) result.push(aList[i]);
-      if(i<bList.length) result.push(bList[i]);
-    }
-    return result;
+    return (staffList||[]).filter(s=>s.oncallType===typeKey).map(s=>s.id);
   }
 
   const wq={
-    junya:  q(wdO,"junya"),
-    oncall: buildOncallQueue(wdO,staffList),
+    junya:   q(wdO,"junya"),
+    oncallA: buildQueue(wdO,"oncallA","A",staffList),
+    oncallB: buildQueue(wdO,"oncallB","B",staffList),
   };
   const eq={
-    nisoku: q(weO,"nisoku"),
-    junya:  q(weO,"junya"),
-    oncall: buildOncallQueue(weO,staffList),
+    nisoku:  q(weO,"nisoku"),
+    junya:   q(weO,"junya"),
+    oncallA: buildQueue(weO,"oncallA","A",staffList),
+    oncallB: buildQueue(weO,"oncallB","B",staffList),
   };
   for(let d=1;d<=n;d++){
     const ds=toStr(y,m,d); const isWE=isHolidayOrWeekend(ds);
@@ -108,9 +101,13 @@ function genSched(y,m,wdO,weO,staffList){
 function buildMaster(staff){
   const wd=[],we=[];
   staff.forEach(s=>wd.push({shift:"junya",staffId:s.id}));
-  // oncall はA・B交互で自動生成するためマスターは空でOK
+  // 拘束A・B それぞれ独立した順番リスト（マスター未設定時はoncallTypeで自動生成）
+  staff.filter(s=>s.oncallType==="A").forEach(s=>wd.push({shift:"oncallA",staffId:s.id}));
+  staff.filter(s=>s.oncallType==="B").forEach(s=>wd.push({shift:"oncallB",staffId:s.id}));
   staff.forEach(s=>we.push({shift:"nisoku",staffId:s.id}));
   staff.forEach(s=>we.push({shift:"junya",staffId:s.id}));
+  staff.filter(s=>s.oncallType==="A").forEach(s=>we.push({shift:"oncallA",staffId:s.id}));
+  staff.filter(s=>s.oncallType==="B").forEach(s=>we.push({shift:"oncallB",staffId:s.id}));
   return {wd,we};
 }
 
@@ -316,7 +313,7 @@ export default function App(){
 
   // 集計
   const stats={};
-  staff.forEach(s=>{stats[s.id]={nisoku:0,junya:0,oncall:0};});
+  staff.forEach(s=>{stats[s.id]={nisoku:0,junya:0,oncallA:0,oncallB:0};});
   Object.entries(sched).forEach(([ds,e])=>{
     if(!ds.startsWith(`${yr}-${String(mo+1).padStart(2,"0")}`))return;
     Object.entries(e).forEach(([k,sid])=>{if(stats[sid])stats[sid][k]=(stats[sid][k]||0)+1;});
@@ -360,7 +357,7 @@ export default function App(){
             <button onClick={()=>chMo(-1)} style={{background:"none",border:"none",fontSize:26,color:"#007AFF",cursor:"pointer",lineHeight:1,padding:"0 6px"}}>‹</button>
             <div style={{textAlign:"center"}}>
               <div style={{fontSize:22,fontWeight:700,color:"#1C1C1E"}}>{yr}年 {MJ[mo]}</div>
-              <div style={{fontSize:11,color:"#8E8E93",marginTop:2}}>{selIsWE?"土日祝：日直・準夜勤・拘束":"平日：準夜勤・拘束"}</div>
+              <div style={{fontSize:11,color:"#8E8E93",marginTop:2}}>{selIsWE?"土日祝：日直・準夜勤・拘束A・拘束B":"平日：準夜勤・拘束A・拘束B"}</div>
             </div>
             <button onClick={()=>chMo(1)} style={{background:"none",border:"none",fontSize:26,color:"#007AFF",cursor:"pointer",lineHeight:1,padding:"0 6px"}}>›</button>
           </div>
@@ -510,7 +507,7 @@ export default function App(){
             </div>
           </div>
           {staff.map(s=>{
-            const cnt=stats[s.id]||{nisoku:0,junya:0,oncall:0};
+            const cnt=stats[s.id]||{nisoku:0,junya:0,oncallA:0,oncallB:0};
             const total=Object.values(cnt).reduce((a,b)=>a+b,0);
             return(
               <div key={s.id} style={{background:"white",borderRadius:16,marginBottom:10,padding:"16px 18px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}}>
@@ -668,10 +665,10 @@ export default function App(){
               <div style={{background:"#FFFDE7",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:13,color:"#795548",lineHeight:1.8,border:"1px solid #FFF176"}}>
                 💡 各シフトの担当順を設定します。順番通りに繰り返し割り当てられます。
               </div>
-              <MasterSec title="📅 平日シフト" color="#34C759" draft={dWD} shifts={["junya","oncall"]} staff={staff}
+              <MasterSec title="📅 平日シフト" color="#34C759" draft={dWD} shifts={["junya","oncallA","oncallB"]} staff={staff}
                 onAdd={(sk,sid)=>addMR("wd",sk,sid)} onRem={i=>remMR("wd",i)} onMov={(i,d)=>movMR("wd",i,d)}/>
               <div style={{height:12}}/>
-              <MasterSec title="🏖️ 土日祝シフト" color="#FF9500" draft={dWE} shifts={["nisoku","junya","oncall"]} staff={staff}
+              <MasterSec title="🏖️ 土日祝シフト" color="#FF9500" draft={dWE} shifts={["nisoku","junya","oncallA","oncallB"]} staff={staff}
                 onAdd={(sk,sid)=>addMR("we",sk,sid)} onRem={i=>remMR("we",i)} onMov={(i,d)=>movMR("we",i,d)}/>
               <div style={{display:"flex",gap:10,marginTop:14}}>
                 <button onClick={closeMaster} style={cancelBtn}>キャンセル</button>
