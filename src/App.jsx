@@ -147,6 +147,7 @@ export default function App(){
   const [editMember,setEditMember]=useState(null);
   const [mForm,     setMForm     ]=useState({name:"",color:COLOR_OPTIONS[0],oncallType:"A"});
   const [delConf,   setDelConf   ]=useState(null);
+  const [clearConf, setClearConf ]=useState(false); // シフト全クリア確認
 
   // マスターフォーム
   const [dWD,setDWD]=useState(null);
@@ -237,6 +238,21 @@ export default function App(){
     setWdO(dWD);setWeO(dWE);setSched(newSched);
     note("シフトマスターを更新し今月を再生成しました");closeMaster();
     if(gasUrl&&autoSync) autoSave({wdO:dWD,weO:dWE,sched:newSched});
+  }
+
+  // ── シフト全クリア ──
+  function clearAllShifts(){
+    const empty={};
+    const days=daysInMonth(yr,mo);
+    const first=firstDow(yr,mo);
+    for(let d=1;d<=days;d++){
+      const ds=toStr(yr,mo,d);
+      empty[ds]={};
+    }
+    setSched(prev=>({...prev,...empty}));
+    if(gasUrl&&autoSync) autoSave({sched:{...sched,...empty}});
+    note(`${yr}年${MJ[mo]}のシフトをクリアしました`);
+    setClearConf(false);
   }
 
   // ── 同期 ──
@@ -336,6 +352,7 @@ export default function App(){
           </div>
           <div style={{display:"flex",gap:8}}>
             <Btn label={syncSt==="loading"?"⏳":"☁️"} color={syncColor} onClick={()=>setSyncOpen(true)}/>
+            <Btn label="🗑️" color="#FF3B30" onClick={()=>setClearConf(true)}/>
             <Btn label="設定" color="#007AFF" onClick={()=>{setSettOpen(true);setSettTab("member");startAdd();}}/>
           </div>
         </div>
@@ -547,6 +564,31 @@ export default function App(){
               </div>
             ))
           }
+        </div>
+      )}
+
+      {/* ━━━━━━ シフト全クリア確認 ━━━━━━ */}
+      {clearConf&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500,padding:24}}>
+          <div style={{background:"white",borderRadius:20,width:"100%",maxWidth:340,padding:28,boxShadow:"0 8px 40px rgba(0,0,0,0.2)"}}>
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{fontSize:44,marginBottom:12}}>🗑️</div>
+              <div style={{fontSize:18,fontWeight:700,color:"#1C1C1E",marginBottom:8}}>シフトをクリア</div>
+              <div style={{fontSize:14,color:"#8E8E93",lineHeight:1.6}}>
+                {yr}年{MJ[mo]}の<br/>シフトをすべて削除します。<br/>この操作は元に戻せません。
+              </div>
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={()=>setClearConf(false)}
+                style={{flex:1,padding:"13px 0",background:"#F2F2F7",color:"#1C1C1E",border:"none",borderRadius:14,cursor:"pointer",fontSize:15,fontWeight:600}}>
+                キャンセル
+              </button>
+              <button onClick={clearAllShifts}
+                style={{flex:1,padding:"13px 0",background:"#FF3B30",color:"white",border:"none",borderRadius:14,cursor:"pointer",fontSize:15,fontWeight:700}}>
+                クリアする
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
