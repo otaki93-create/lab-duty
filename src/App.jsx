@@ -1,15 +1,14 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 
-
-// ─── localStorage ヘルパー ─────────────────────────────────────────
-const LS_KEY = "labDutyData_v1";
+// ─── localStorage ─────────────────────────────────────────────────
+const LS_KEY = "labDutyData_v2";
 const LS_URL  = "labDutyGasUrl";
-function lsSave(data){ try{ localStorage.setItem(LS_KEY,JSON.stringify(data)); }catch(e){} }
+function lsSave(d){ try{ localStorage.setItem(LS_KEY,JSON.stringify(d)); }catch(e){} }
 function lsLoad(){ try{ const r=localStorage.getItem(LS_KEY); return r?JSON.parse(r):null; }catch(e){ return null; } }
-function lsSaveUrl(url){ try{ localStorage.setItem(LS_URL,url); }catch(e){} }
+function lsSaveUrl(u){ try{ localStorage.setItem(LS_URL,u); }catch(e){} }
 function lsLoadUrl(){ try{ return localStorage.getItem(LS_URL)||""; }catch(e){ return ""; } }
 
-// ─── 祝日 ──────────────────────────────────────────────────────────
+// ─── 祝日 ─────────────────────────────────────────────────────────
 const HOLIDAYS = new Set([
   "2025-01-01","2025-01-02","2025-01-03","2025-01-13","2025-02-11","2025-02-23","2025-02-24",
   "2025-03-20","2025-04-29","2025-05-03","2025-05-04","2025-05-05","2025-05-06",
@@ -20,20 +19,17 @@ const HOLIDAYS = new Set([
   "2026-07-20","2026-08-11","2026-09-21","2026-09-22","2026-10-12",
   "2026-11-03","2026-11-23","2026-12-23",
 ]);
-function isHolidayOrWeekend(ds){
-  if(HOLIDAYS.has(ds)) return true;
-  const d=new Date(ds).getDay(); return d===0||d===6;
-}
+function isHol(ds){ return HOLIDAYS.has(ds)||new Date(ds).getDay()===0||new Date(ds).getDay()===6; }
 
-// ─── 定数 ──────────────────────────────────────────────────────────
-const MAX_STAFF=30;
-const INITIAL_STAFF=[
-  {id:1,name:"田中 一郎",color:"#007AFF",oncallType:"A"},
-  {id:2,name:"佐藤 花子",color:"#34C759",oncallType:"A"},
-  {id:3,name:"山田 太郎",color:"#FF9500",oncallType:"B"},
-  {id:4,name:"鈴木 美咲",color:"#FF3B30",oncallType:"B"},
-  {id:5,name:"中村 健二",color:"#AF52DE",oncallType:"A"},
-  {id:6,name:"伊藤 直子",color:"#FF2D55",oncallType:"B"},
+// ─── 定数 ─────────────────────────────────────────────────────────
+const MAX_STAFF = 30;
+const INITIAL_STAFF = [
+  {id:1,name:"田中 一郎",color:"#007AFF",shift班:"A",拘束分類:"A"},
+  {id:2,name:"佐藤 花子",color:"#34C759",shift班:"A",拘束分類:"B"},
+  {id:3,name:"山田 太郎",color:"#FF9500",shift班:"B",拘束分類:"A"},
+  {id:4,name:"鈴木 美咲",color:"#FF3B30",shift班:"B",拘束分類:"B"},
+  {id:5,name:"中村 健二",color:"#AF52DE",shift班:"A",拘束分類:"A"},
+  {id:6,name:"伊藤 直子",color:"#FF2D55",shift班:"B",拘束分類:"B"},
 ];
 const COLOR_OPTIONS=[
   "#007AFF","#34C759","#FF9500","#FF3B30","#AF52DE","#FF2D55",
@@ -42,94 +38,121 @@ const COLOR_OPTIONS=[
   "#32ADE6","#64D2FF","#F7A046","#E53935","#6D28D9","#BE185D",
   "#0071E3","#1D9BF0","#CA8A04","#DC2626","#7C3AED","#9D174D",
 ];
+
+// シフト定義
 const SHIFT_DEFS={
   nisoku:  {label:"日直",  color:"#FF9500", bg:"#FFF3E0", icon:"☀️"},
   junya:   {label:"準夜勤",color:"#007AFF", bg:"#EEF4FF", icon:"🌙"},
-  // A班メンバーが担当する日 → 拘束B（oncallB）
-  // B班メンバーが担当する日 → 拘束A（oncallA）
-  // 担当者を選ぶと拘束の種類が自動で決まる
   oncallA: {label:"拘束A", color:"#34C759", bg:"#EDFBF0", icon:"📗"},
   oncallB: {label:"拘束B", color:"#AF52DE", bg:"#F5EEFF", icon:"📘"},
 };
-// シフト表示用（どちらの拘束かは手動で決定するため oncallA/oncallB 両方を含む）
-const WEEKDAY_SHIFTS=["junya","oncallA","oncallB"];
-const WEEKEND_SHIFTS=["nisoku","junya","oncallA","oncallB"];
-// 実際の表示は1日につき oncallA か oncallB のどちらか一方のみ
-function getShifts(ds){ return isHolidayOrWeekend(ds)?WEEKEND_SHIFTS:WEEKDAY_SHIFTS; }
-// その日のスケジュールから実際に入っているシフトのみ返す
-function getActiveShifts(ds, entry){
-  const base = isHolidayOrWeekend(ds) ? ["nisoku","junya"] : ["junya"];
-  // 拘束はA/Bどちらか入っている方を表示
-  if(entry?.oncallA) base.push("oncallA");
-  else if(entry?.oncallB) base.push("oncallB");
-  else base.push("oncallA"); // デフォルト
-  return base;
+
+// ─── ペアルール ───────────────────────────────────────────────────
+// 平日: 準夜勤がA班 → 拘束B担当者が拘束に入る
+//       準夜勤がB班 → 拘束A担当者が拘束に入る
+// 土日祝: 日直・準夜勤がA班 → 拘束B担当者が拘束に入る
+//         日直・準夜勤がB班 → 拘束A担当者が拘束に入る
+// 拘束の種類（A/B）は準夜勤（平日）or 日直（土日祝）の班で自動決定
+
+function getOncallTypeForShiftBan(ban){
+  // A班が勤務 → 拘束B、B班が勤務 → 拘束A
+  return ban==="A" ? "B" : "A";
+}
+function getOncallShiftKey(ban){
+  // A班が勤務 → oncallB、B班が勤務 → oncallA
+  return ban==="A" ? "oncallB" : "oncallA";
 }
 
-// ─── ユーティリティ ────────────────────────────────────────────────
+// ─── ユーティリティ ───────────────────────────────────────────────
 function daysInMonth(y,m){ return new Date(y,m+1,0).getDate(); }
 function firstDow(y,m)   { return new Date(y,m,1).getDay(); }
 function toStr(y,m,d)    { return `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`; }
 
+// スケジュール生成
 function genSched(y,m,wdO,weO,staffList){
-  // 拘束ルール:
-  //   拘束Aの日 → B班メンバーが担当
-  //   拘束Bの日 → A班メンバーが担当
-  // どちらの拘束かは手動編集で決定。genSchedはデフォルト割り当てのみ。
-  // デフォルトは平日・土日祝ともに拘束Aから開始（B班メンバーが担当）
-
   const n=daysInMonth(y,m); const sched={};
   function q(o,k){ return o.filter(r=>r.shift===k).map(r=>r.staffId); }
-  function byType(t){ return (staffList||[]).filter(s=>s.oncallType===t).map(s=>s.id); }
+  function byBan(ban){ return (staffList||[]).filter(s=>s["shift班"]===ban).map(s=>s.id); }
+  function by拘束(type){ return (staffList||[]).filter(s=>s["拘束分類"]===type).map(s=>s.id); }
 
-  // 準夜勤キュー（平日・土日祝で独立）
-  const WD_JUNYA  = q(wdO,"junya").length  ? q(wdO,"junya")  : (staffList||[]).map(s=>s.id);
-  const WE_NISOKU = q(weO,"nisoku").length  ? q(weO,"nisoku") : (staffList||[]).map(s=>s.id);
-  const WE_JUNYA  = q(weO,"junya").length   ? q(weO,"junya")  : (staffList||[]).map(s=>s.id);
-
-  // 拘束キュー
-  // oncallA（拘束A）= B班メンバーが担当
-  // oncallB（拘束B）= A班メンバーが担当
-  const WD_OCA = q(wdO,"oncallA").length ? q(wdO,"oncallA") : byType("B"); // 拘束AはB班担当
-  const WD_OCB = q(wdO,"oncallB").length ? q(wdO,"oncallB") : byType("A"); // 拘束BはA班担当
-  const WE_OCA = q(weO,"oncallA").length ? q(weO,"oncallA") : byType("B");
-  const WE_OCB = q(weO,"oncallB").length ? q(weO,"oncallB") : byType("A");
+  // 準夜勤キュー（A班・B班それぞれ）
+  const WD_J_A = q(wdO,"junya_A").length ? q(wdO,"junya_A") : byBan("A");
+  const WD_J_B = q(wdO,"junya_B").length ? q(wdO,"junya_B") : byBan("B");
+  const WE_N_A = q(weO,"nisoku_A").length ? q(weO,"nisoku_A") : byBan("A");
+  const WE_N_B = q(weO,"nisoku_B").length ? q(weO,"nisoku_B") : byBan("B");
+  const WE_J_A = q(weO,"junya_A").length  ? q(weO,"junya_A")  : byBan("A");
+  const WE_J_B = q(weO,"junya_B").length  ? q(weO,"junya_B")  : byBan("B");
+  // 拘束キュー（拘束A担当・拘束B担当それぞれ）
+  const WD_OCA = q(wdO,"oncallA").length ? q(wdO,"oncallA") : by拘束("A");
+  const WD_OCB = q(wdO,"oncallB").length ? q(wdO,"oncallB") : by拘束("B");
+  const WE_OCA = q(weO,"oncallA").length ? q(weO,"oncallA") : by拘束("A");
+  const WE_OCB = q(weO,"oncallB").length ? q(weO,"oncallB") : by拘束("B");
 
   // カーソル（全て独立）
-  let c_wd_j=0, c_we_n=0, c_we_j=0;
-  let c_wd_a=0, c_wd_b=0;
-  let c_we_a=0, c_we_b=0;
+  let c={wd_jA:0,wd_jB:0,we_nA:0,we_nB:0,we_jA:0,we_jB:0,wd_ocA:0,wd_ocB:0,we_ocA:0,we_ocB:0};
+  // 平日・土日祝それぞれの「今日はA班番・B班番」フラグ
+  let wd_ban_turn="A"; // 平日準夜勤の班ターン
+  let we_ban_turn="A"; // 土日祝日直・準夜勤の班ターン
 
-  // デフォルト割り当て: 全日を拘束A（B班担当）で埋める
-  // 手動編集で拘束A→拘束Bに変更可能
   for(let d=1;d<=n;d++){
     const ds=toStr(y,m,d);
-    const isWE=isHolidayOrWeekend(ds);
     const e={};
-    if(isWE){
-      if(WE_NISOKU.length){ e.nisoku=WE_NISOKU[c_we_n%WE_NISOKU.length]; c_we_n++; }
-      if(WE_JUNYA.length) { e.junya =WE_JUNYA[c_we_j%WE_JUNYA.length];   c_we_j++; }
-      if(WE_OCA.length)   { e.oncallA=WE_OCA[c_we_a%WE_OCA.length];      c_we_a++; }
+    if(isHol(ds)){
+      // 土日祝: 日直 + 準夜勤 + 拘束（1枠）
+      const ban=we_ban_turn;
+      const nisokuQ = ban==="A" ? WE_N_A : WE_N_B;
+      const junyaQ  = ban==="A" ? WE_J_A : WE_J_B;
+      const oncallKey = getOncallShiftKey(ban); // A班なら oncallB、B班なら oncallA
+      const oncallQ   = oncallKey==="oncallA" ? WE_OCA : WE_OCB;
+      const ocCurKey  = oncallKey==="oncallA" ? "we_ocA" : "we_ocB";
+      const niCurKey  = ban==="A" ? "we_nA" : "we_nB";
+      const jCurKey   = ban==="A" ? "we_jA" : "we_jB";
+      if(nisokuQ.length){ e.nisoku=nisokuQ[c[niCurKey]%nisokuQ.length]; c[niCurKey]++; }
+      if(junyaQ.length) { e.junya =junyaQ[c[jCurKey]%junyaQ.length];   c[jCurKey]++;  }
+      if(oncallQ.length){ e[oncallKey]=oncallQ[c[ocCurKey]%oncallQ.length]; c[ocCurKey]++; }
+      we_ban_turn = ban==="A" ? "B" : "A";
     } else {
-      if(WD_JUNYA.length) { e.junya =WD_JUNYA[c_wd_j%WD_JUNYA.length];   c_wd_j++; }
-      if(WD_OCA.length)   { e.oncallA=WD_OCA[c_wd_a%WD_OCA.length];      c_wd_a++; }
+      // 平日: 準夜勤 + 拘束（1枠）
+      const ban=wd_ban_turn;
+      const junyaQ  = ban==="A" ? WD_J_A : WD_J_B;
+      const oncallKey = getOncallShiftKey(ban);
+      const oncallQ   = oncallKey==="oncallA" ? WD_OCA : WD_OCB;
+      const ocCurKey  = oncallKey==="oncallA" ? "wd_ocA" : "wd_ocB";
+      const jCurKey   = ban==="A" ? "wd_jA" : "wd_jB";
+      if(junyaQ.length) { e.junya =junyaQ[c[jCurKey]%junyaQ.length];       c[jCurKey]++;  }
+      if(oncallQ.length){ e[oncallKey]=oncallQ[c[ocCurKey]%oncallQ.length]; c[ocCurKey]++; }
+      wd_ban_turn = ban==="A" ? "B" : "A";
     }
     sched[ds]=e;
   }
   return sched;
 }
+
 function buildMaster(staff){
-  // oncallA順番 = 拘束Aを担当するB班メンバーの順番
-  // oncallB順番 = 拘束Bを担当するA班メンバーの順番
   const wd=[],we=[];
-  staff.forEach(s=>wd.push({shift:"junya",staffId:s.id}));
-  staff.filter(s=>s.oncallType==="B").forEach(s=>wd.push({shift:"oncallA",staffId:s.id}));
-  staff.filter(s=>s.oncallType==="A").forEach(s=>wd.push({shift:"oncallB",staffId:s.id}));
-  staff.forEach(s=>we.push({shift:"nisoku",staffId:s.id}));
-  staff.forEach(s=>we.push({shift:"junya",staffId:s.id}));
-  staff.filter(s=>s.oncallType==="B").forEach(s=>we.push({shift:"oncallA",staffId:s.id}));
-  staff.filter(s=>s.oncallType==="A").forEach(s=>we.push({shift:"oncallB",staffId:s.id}));
+  // 準夜勤: A班・B班それぞれの順番
+  staff.filter(s=>s["shift班"]==="A").forEach(s=>wd.push({shift:"junya_A",staffId:s.id}));
+  staff.filter(s=>s["shift班"]==="B").forEach(s=>wd.push({shift:"junya_B",staffId:s.id}));
+  // 拘束: 拘束A担当・拘束B担当それぞれの順番
+  staff.filter(s=>s["拘束分類"]==="A").forEach(s=>wd.push({shift:"oncallA",staffId:s.id}));
+  staff.filter(s=>s["拘束分類"]==="B").forEach(s=>wd.push({shift:"oncallB",staffId:s.id}));
+  // 土日祝
+  staff.filter(s=>s["shift班"]==="A").forEach(s=>we.push({shift:"nisoku_A",staffId:s.id}));
+  staff.filter(s=>s["shift班"]==="B").forEach(s=>we.push({shift:"nisoku_B",staffId:s.id}));
+  staff.filter(s=>s["shift班"]==="A").forEach(s=>we.push({shift:"junya_A",staffId:s.id}));
+  staff.filter(s=>s["shift班"]==="B").forEach(s=>we.push({shift:"junya_B",staffId:s.id}));
+  staff.filter(s=>s["拘束分類"]==="A").forEach(s=>we.push({shift:"oncallA",staffId:s.id}));
+  staff.filter(s=>s["拘束分類"]==="B").forEach(s=>we.push({shift:"oncallB",staffId:s.id}));
   return {wd,we};
+}
+
+// その日のエントリから表示用シフトリストを返す
+function getDisplayShifts(ds, entry){
+  const base = isHol(ds) ? ["nisoku","junya"] : ["junya"];
+  if(entry?.oncallA) base.push("oncallA");
+  else if(entry?.oncallB) base.push("oncallB");
+  else base.push("oncallA"); // デフォルト表示
+  return base;
 }
 
 const today=new Date();
@@ -139,112 +162,88 @@ const MJ=["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月"
 
 // ════════════════════════════════════════════════════════════════════
 export default function App(){
-  // ── localStorage から初期値を復元 ──
-  const saved = lsLoad();
-  const m0 = buildMaster(saved?.staff || INITIAL_STAFF);
+  const saved=lsLoad();
+  const m0=buildMaster(saved?.staff||INITIAL_STAFF);
+  const initStaff=saved?.staff||INITIAL_STAFF;
 
-  const [staff,  setStaff  ]=useState(()=>saved?.staff   || INITIAL_STAFF);
-  const [wdO,   setWdO    ]=useState(()=>saved?.wdO      || m0.wd);
-  const [weO,   setWeO    ]=useState(()=>saved?.weO      || m0.we);
-  const [yr,    setYr     ]=useState(today.getFullYear());
-  const [mo,    setMo     ]=useState(today.getMonth());
-  const [sched, setSched  ]=useState(()=>{
-    const initStaff=saved?.staff||INITIAL_STAFF;
-    const base=genSched(today.getFullYear(),today.getMonth(), saved?.wdO||m0.wd, saved?.weO||m0.we, initStaff);
-    return saved?.sched ? {...base,...saved.sched} : base;
+  const [staff,  setStaff ]=useState(initStaff);
+  const [wdO,    setWdO   ]=useState(saved?.wdO||m0.wd);
+  const [weO,    setWeO   ]=useState(saved?.weO||m0.we);
+  const [yr,     setYr    ]=useState(today.getFullYear());
+  const [mo,     setMo    ]=useState(today.getMonth());
+  const [sched,  setSched ]=useState(()=>{
+    const base=genSched(today.getFullYear(),today.getMonth(),saved?.wdO||m0.wd,saved?.weO||m0.we,initStaff);
+    return saved?.sched?{...base,...saved.sched}:base;
   });
-  const [selDs, setSelDs  ]=useState(todayStr);
-  const [tab,   setTab    ]=useState("cal");
-  const [notifs,setNotifs ]=useState([]);
-
-  // モーダル類
-  const [editOpen,  setEditOpen  ]=useState(false);
-  const [editData,  setEditData  ]=useState({});
-  const [settOpen,  setSettOpen  ]=useState(false);
-  const [settTab,   setSettTab   ]=useState("member");
-  const [syncOpen,  setSyncOpen  ]=useState(false);
-
-  // メンバーフォーム
+  const [selDs,  setSelDs ]=useState(todayStr);
+  const [tab,    setTab   ]=useState("cal");
+  const [notifs, setNotifs]=useState([]);
+  const [editOpen,  setEditOpen ]=useState(false);
+  const [editData,  setEditData ]=useState({});
+  const [settOpen,  setSettOpen ]=useState(false);
+  const [settTab,   setSettTab  ]=useState("member");
+  const [syncOpen,  setSyncOpen ]=useState(false);
   const [editMember,setEditMember]=useState(null);
-  const [mForm,     setMForm     ]=useState({name:"",color:COLOR_OPTIONS[0],oncallType:"A"});
-  const [delConf,   setDelConf   ]=useState(null);
-  const [clearConf, setClearConf ]=useState(false); // シフト全クリア確認
-
-  // マスターフォーム
-  const [dWD,setDWD]=useState(null);
-  const [dWE,setDWE]=useState(null);
-
-  // 同期
-  const [gasUrl,   setGasUrl   ]=useState(()=>lsLoadUrl());
-  const [syncSt,   setSyncSt   ]=useState("idle");
-  const [syncMsg,  setSyncMsg  ]=useState("");
-  const [autoSync, setAutoSync ]=useState(()=>!!lsLoadUrl()); // URLあれば自動同期ON
-  const syncingRef = useRef(false); // 多重実行防止
-
-  // ── データ変化時にlocalStorageへ自動保存 ──
-  useEffect(()=>{
-    lsSave({staff,sched,wdO,weO});
-  },[staff,sched,wdO,weO]);
-
-  // ── GAS URLをlocalStorageへ保存 ──
-  useEffect(()=>{ lsSaveUrl(gasUrl); },[gasUrl]);
-
-  // ── 起動時にGASから自動読み込み ──
-  useEffect(()=>{
-    if(gasUrl && autoSync) autoLoad();
-  },[]); // 初回のみ
+  const [mForm,  setMForm ]=useState({name:"",color:COLOR_OPTIONS[0],"shift班":"A","拘束分類":"A"});
+  const [delConf,setDelConf]=useState(null);
+  const [dWD,    setDWD   ]=useState(null);
+  const [dWE,    setDWE   ]=useState(null);
+  const [gasUrl, setGasUrl]=useState(()=>lsLoadUrl());
+  const [syncSt, setSyncSt]=useState("idle");
+  const [syncMsg,setSyncMsg]=useState("");
+  const [autoSync,setAutoSync]=useState(()=>!!lsLoadUrl());
+  const [clearConf,setClearConf]=useState(false);
+  const syncingRef=useRef(false);
 
   function note(msg){setNotifs(p=>[{id:Date.now(),msg,time:new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})},...p].slice(0,20));}
 
-  // ── 月移動 ──
+  useEffect(()=>{ lsSave({staff,sched,wdO,weO}); },[staff,sched,wdO,weO]);
+  useEffect(()=>{ lsSaveUrl(gasUrl); },[gasUrl]);
+  useEffect(()=>{ if(gasUrl&&autoSync) autoLoad(); },[]);
+
   function chMo(d){
     let nm=mo+d,ny=yr;
-    if(nm<0){nm=11;ny--;}else if(nm>11){nm=0;ny++;}
+    if(nm<0){nm=11;ny--;} else if(nm>11){nm=0;ny++;}
     setMo(nm);setYr(ny);
     setSched(prev=>({...genSched(ny,nm,wdO,weO,staff),...prev}));
     setSelDs(toStr(ny,nm,1));
   }
 
-  // ── シフト編集 ──
   function openEdit(ds){setEditData({...(sched[ds]||{})});setSelDs(ds);setEditOpen(true);}
+
   function saveEdit(){
-    // 拘束A/Bどちらか一方のみ保存（両方入力された場合はAを優先、Bを入力したらAをクリア）
-    const cleaned={...editData};
-    if(cleaned.oncallB && cleaned.oncallA){
-      // 両方ある場合、最後に変更された方を優先（ここではBを優先しAをクリア）
-      cleaned.oncallA=null;
-    }
-    const newSched={...sched,[selDs]:cleaned};
+    const newSched={...sched,[selDs]:{...editData}};
     setSched(newSched);
-    const allShifts=["nisoku","junya","oncallA","oncallB"];
-    const names=allShifts.map(k=>{const m=staff.find(x=>x.id===cleaned[k]);return m?`${SHIFT_DEFS[k].icon}${m.name}`:null;}).filter(Boolean).join(" ");
+    const keys=["nisoku","junya","oncallA","oncallB"];
+    const names=keys.map(k=>{const m=staff.find(x=>x.id===editData[k]);return m?`${SHIFT_DEFS[k].icon}${m.name}`:null;}).filter(Boolean).join(" ");
     note(`${selDs} 更新 (${names})`);setEditOpen(false);
     if(gasUrl&&autoSync) autoSave({sched:newSched});
   }
 
-  // ── メンバー管理 ──
-  function startAdd(){setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[staff.length%COLOR_OPTIONS.length],oncallType:"A"});}
-  function startEdit(s){setEditMember(s);setMForm({name:s.name,color:s.color,oncallType:s.oncallType||"A"});}
+  function startAdd(){setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[staff.length%COLOR_OPTIONS.length],"shift班":"A","拘束分類":"A"});}
+  function startEdit(s){setEditMember(s);setMForm({name:s.name,color:s.color,"shift班":s["shift班"]||"A","拘束分類":s["拘束分類"]||"A"});}
+
   function saveMember(){
     if(!mForm.name.trim())return;
     let newStaff;
     if(editMember){
-      newStaff=staff.map(s=>s.id===editMember.id?{...s,name:mForm.name.trim(),color:mForm.color,oncallType:mForm.oncallType}:s);
-      setStaff(newStaff);
+      newStaff=staff.map(s=>s.id===editMember.id?{...s,...mForm,name:mForm.name.trim()}:s);
       note(`「${mForm.name.trim()}」を更新しました`);
-    }else{
+    } else {
       if(staff.length>=MAX_STAFF)return;
-      const ns={id:Date.now(),name:mForm.name.trim(),color:mForm.color,oncallType:mForm.oncallType};
-      newStaff=[...staff,ns];
-      setStaff(newStaff);
+      newStaff=[...staff,{id:Date.now(),...mForm,name:mForm.name.trim()}];
       note(`「${mForm.name.trim()}」を追加しました`);
     }
-    setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[0],oncallType:"A"});
+    setStaff(newStaff);
+    setEditMember(null);
+    setMForm({name:"",color:COLOR_OPTIONS[0],"shift班":"A","拘束分類":"A"});
     if(gasUrl&&autoSync) autoSave({staff:newStaff});
   }
+
   function delMember(id){
     const m=staff.find(s=>s.id===id);
-    setStaff(prev=>prev.filter(s=>s.id!==id));
+    const newStaff=staff.filter(s=>s.id!==id);
+    setStaff(newStaff);
     setWdO(p=>p.filter(r=>r.staffId!==id));
     setWeO(p=>p.filter(r=>r.staffId!==id));
     setSched(prev=>{
@@ -255,50 +254,59 @@ export default function App(){
     note(`「${m?.name}」を削除しました`);setDelConf(null);
   }
 
-  // ── マスター ──
   function openMaster(){setDWD(wdO.map(r=>({...r})));setDWE(weO.map(r=>({...r})));}
   function closeMaster(){setDWD(null);setDWE(null);}
   function addMR(type,sk,sid){if(!sid)return;(type==="wd"?setDWD:setDWE)(p=>[...p,{shift:sk,staffId:Number(sid)}]);}
   function remMR(type,i){(type==="wd"?setDWD:setDWE)(p=>p.filter((_,j)=>j!==i));}
   function movMR(type,i,d){(type==="wd"?setDWD:setDWE)(p=>{const a=[...p],n=i+d;if(n<0||n>=a.length)return a;[a[i],a[n]]=[a[n],a[i]];return a;});}
   function saveMaster(){
-    const newSched={...sched,...genSched(yr,mo,dWD,dWE,staff)};
-    setWdO(dWD);setWeO(dWE);setSched(newSched);
-    note("シフトマスターを更新し今月を再生成しました");closeMaster();
-    if(gasUrl&&autoSync) autoSave({wdO:dWD,weO:dWE,sched:newSched});
+    const ns={...sched,...genSched(yr,mo,dWD,dWE,staff)};
+    setWdO(dWD);setWeO(dWE);setSched(ns);
+    note("マスターを更新し今月を再生成しました");closeMaster();
+    if(gasUrl&&autoSync) autoSave({wdO:dWD,weO:dWE,sched:ns});
   }
 
-  // ── シフト全クリア ──
   function clearAllShifts(){
     const empty={};
-    const days=daysInMonth(yr,mo);
-    const first=firstDow(yr,mo);
-    for(let d=1;d<=days;d++){
-      const ds=toStr(yr,mo,d);
-      empty[ds]={};
-    }
-    setSched(prev=>({...prev,...empty}));
-    if(gasUrl&&autoSync) autoSave({sched:{...sched,...empty}});
-    note(`${yr}年${MJ[mo]}のシフトをクリアしました`);
-    setClearConf(false);
+    for(let d=1;d<=daysInMonth(yr,mo);d++) empty[toStr(yr,mo,d)]={};
+    const ns={...sched,...empty};
+    setSched(ns);
+    note(`${yr}年${MJ[mo]}のシフトをクリアしました`);setClearConf(false);
+    if(gasUrl&&autoSync) autoSave({sched:ns});
   }
 
-  // ── 同期 ──
-  // 手動読み込み
+  async function autoLoad(){
+    if(syncingRef.current)return; syncingRef.current=true; setSyncSt("loading");
+    try{
+      const r=await fetch(`${gasUrl.trim()}?action=load`);const j=await r.json();
+      if(j.error)throw new Error(j.error);
+      if(j.staff)setStaff(j.staff); if(j.sched)setSched(p=>({...p,...j.sched}));
+      if(j.wdOrder)setWdO(j.wdOrder); if(j.weOrder)setWeO(j.weOrder);
+      setSyncSt("ok");setSyncMsg("✅ 起動時に読み込みました");note("起動時に自動読み込みしました");
+    }catch(e){setSyncSt("error");setSyncMsg("⚠️ 自動読み込み失敗");}
+    finally{syncingRef.current=false;}
+  }
+  async function autoSave(ov={}){
+    if(!gasUrl.trim()||syncingRef.current)return;
+    syncingRef.current=true; setSyncSt("loading");
+    try{
+      const r=await fetch(gasUrl.trim(),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"save",staff:ov.staff||staff,sched:ov.sched||sched,wdOrder:ov.wdO||wdO,weOrder:ov.weO||weO})});
+      const j=await r.json();if(j.error)throw new Error(j.error);
+      setSyncSt("ok");setSyncMsg("✅ 自動保存しました");
+    }catch(e){setSyncSt("error");setSyncMsg("⚠️ 自動保存失敗");}
+    finally{syncingRef.current=false;}
+  }
   async function doLoad(){
     if(!gasUrl.trim()){setSyncMsg("URLを入力してください");setSyncSt("error");return;}
     setSyncSt("loading");setSyncMsg("読み込み中...");
     try{
       const r=await fetch(`${gasUrl.trim()}?action=load`);const j=await r.json();
       if(j.error)throw new Error(j.error);
-      if(j.staff){setStaff(j.staff);} if(j.sched){setSched(j.sched);}
-      if(j.wdOrder){setWdO(j.wdOrder);} if(j.weOrder){setWeO(j.weOrder);}
-      // localStorageにも保存
-      lsSave({staff:j.staff||staff, sched:j.sched||sched, wdO:j.wdOrder||wdO, weO:j.weOrder||weO});
+      if(j.staff)setStaff(j.staff); if(j.sched)setSched(j.sched);
+      if(j.wdOrder)setWdO(j.wdOrder); if(j.weOrder)setWeO(j.weOrder);
       setSyncSt("ok");setSyncMsg("✅ 読み込み完了");note("スプレッドシートから読み込みました");
     }catch(e){setSyncSt("error");setSyncMsg(`❌ ${e.message}`);}
   }
-  // 手動保存
   async function doSave(){
     if(!gasUrl.trim()){setSyncMsg("URLを入力してください");setSyncSt("error");return;}
     setSyncSt("loading");setSyncMsg("保存中...");
@@ -308,83 +316,53 @@ export default function App(){
       setSyncSt("ok");setSyncMsg("✅ 保存完了");note("スプレッドシートに保存しました");
     }catch(e){setSyncSt("error");setSyncMsg(`❌ ${e.message}`);}
   }
-  // 起動時の自動読み込み
-  async function autoLoad(){
-    if(syncingRef.current)return; syncingRef.current=true;
-    setSyncSt("loading");
-    try{
-      const r=await fetch(`${gasUrl.trim()}?action=load`);const j=await r.json();
-      if(j.error)throw new Error(j.error);
-      if(j.staff)setStaff(j.staff); if(j.sched)setSched(prev=>({...prev,...j.sched}));
-      if(j.wdOrder)setWdO(j.wdOrder); if(j.weOrder)setWeO(j.weOrder);
-      lsSave({staff:j.staff||staff, sched:j.sched||sched, wdO:j.wdOrder||wdO, weO:j.weOrder||weO});
-      setSyncSt("ok");setSyncMsg("✅ 起動時に最新データを読み込みました");
-      note("起動時にスプレッドシートから自動読み込みしました");
-    }catch(e){
-      setSyncSt("error");setSyncMsg("⚠️ 自動読み込み失敗（オフラインの可能性）");
-    } finally{ syncingRef.current=false; }
-  }
-  // 変更後の自動保存（差分のみ上書き）
-  async function autoSave(overrides={}){
-    if(!gasUrl.trim()||syncingRef.current)return;
-    syncingRef.current=true;
-    setSyncSt("loading");
-    try{
-      const payload={action:"save",
-        staff:   overrides.staff  ||staff,
-        sched:   overrides.sched  ||sched,
-        wdOrder: overrides.wdO    ||wdO,
-        weOrder: overrides.weO    ||weO,
-      };
-      const r=await fetch(gasUrl.trim(),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-      const j=await r.json();if(j.error)throw new Error(j.error);
-      setSyncSt("ok");setSyncMsg("✅ 自動保存しました");
-    }catch(e){
-      setSyncSt("error");setSyncMsg("⚠️ 自動保存失敗（次回手動保存してください）");
-    } finally{ syncingRef.current=false; }
-  }
 
-  // ── レンダリング用 ──
   const days=daysInMonth(yr,mo);
   const first=firstDow(yr,mo);
   const cells=[...Array(first).fill(null),...Array.from({length:days},(_,i)=>i+1)];
   const selEntry=sched[selDs]||{};
-  const selShifts=getActiveShifts(selDs,selEntry);
   const selDow=new Date(selDs).getDay();
-  const selIsHol=HOLIDAYS.has(selDs);
-  const selIsWE=selDow===0||selDow===6||selIsHol;
+  const selIsWE=isHol(selDs);
   const [sY,sM,sD]=selDs.split("-");
+  const selDisplayShifts=getDisplayShifts(selDs,selEntry);
 
   // 集計
   const stats={};
   staff.forEach(s=>{stats[s.id]={nisoku:0,junya:0,oncallA:0,oncallB:0};});
   Object.entries(sched).forEach(([ds,e])=>{
     if(!ds.startsWith(`${yr}-${String(mo+1).padStart(2,"0")}`))return;
-    Object.entries(e).forEach(([k,sid])=>{ if(stats[sid]&&stats[sid][k]!==undefined)stats[sid][k]=(stats[sid][k]||0)+1; });
+    Object.entries(e).forEach(([k,sid])=>{if(stats[sid]&&stats[sid][k]!==undefined)stats[sid][k]=(stats[sid][k]||0)+1;});
   });
 
   const syncColor=syncSt==="ok"?"#34C759":syncSt==="error"?"#FF3B30":syncSt==="loading"?"#FF9500":"#8E8E93";
+
+  // 編集モーダル用：その日の準夜勤担当者の班を判定
+  const junyaMember=staff.find(x=>x.id===editData.junya);
+  const nisokuMember=staff.find(x=>x.id===editData.nisoku);
+  const 主担当班 = selIsWE
+    ? (nisokuMember?.["shift班"] || junyaMember?.["shift班"] || null)
+    : (junyaMember?.["shift班"] || null);
+  const 自動拘束種別 = 主担当班 ? getOncallShiftKey(主担当班) : null; // oncallA or oncallB
 
   return(
     <div style={{fontFamily:"-apple-system,'Helvetica Neue',sans-serif",minHeight:"100vh",background:"#F2F2F7",WebkitTextSizeAdjust:"100%",overflowX:"hidden"}}>
 
       {/* ━━ ヘッダー ━━ */}
       <div style={{background:"white",position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 0 #E5E5EA"}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 18px 10px"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px 8px"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <span style={{fontSize:26}}>🔬</span>
+            <span style={{fontSize:24}}>🔬</span>
             <div>
-              <div style={{fontSize:17,fontWeight:700,color:"#1C1C1E",lineHeight:1.2}}>日当直管理</div>
-              <div style={{fontSize:11,color:"#8E8E93"}}>臨床検査科</div>
+              <div style={{fontSize:16,fontWeight:700,color:"#1C1C1E"}}>日当直管理</div>
+              <div style={{fontSize:10,color:"#8E8E93"}}>臨床検査科</div>
             </div>
           </div>
-          <div style={{display:"flex",gap:8}}>
-            <Btn label={syncSt==="loading"?"⏳":"☁️"} color={syncColor} onClick={()=>setSyncOpen(true)}/>
-            <Btn label="🗑️" color="#FF3B30" onClick={()=>setClearConf(true)}/>
-            <Btn label="設定" color="#007AFF" onClick={()=>{setSettOpen(true);setSettTab("member");startAdd();}}/>
+          <div style={{display:"flex",gap:6}}>
+            <HBtn label={syncSt==="loading"?"⏳":"☁️"} color={syncColor} onClick={()=>setSyncOpen(true)}/>
+            <HBtn label="🗑️" color="#FF3B30" onClick={()=>setClearConf(true)}/>
+            <HBtn label="設定" color="#007AFF" onClick={()=>{setSettOpen(true);setSettTab("member");startAdd();}}/>
           </div>
         </div>
-        {/* タブ */}
         <div style={{display:"flex"}}>
           {[["cal","📅 カレンダー"],["list","📋 一覧"],["stats","📊 集計"],["notif","🔔 通知"]].map(([k,l])=>(
             <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:"9px 0",background:"none",border:"none",borderBottom:tab===k?"2.5px solid #007AFF":"2.5px solid transparent",color:tab===k?"#007AFF":"#8E8E93",fontSize:12,fontWeight:tab===k?700:500,cursor:"pointer",position:"relative"}}>
@@ -394,58 +372,48 @@ export default function App(){
         </div>
       </div>
 
-      {/* ━━ カレンダータブ ━━ */}
+      {/* ━━ カレンダー ━━ */}
       {tab==="cal"&&(
         <div>
-          {/* 月ナビ */}
-          <div style={{background:"white",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 24px 10px",borderBottom:"1px solid #F2F2F7"}}>
-            <button onClick={()=>chMo(-1)} style={{background:"none",border:"none",fontSize:26,color:"#007AFF",cursor:"pointer",lineHeight:1,padding:"0 6px"}}>‹</button>
+          <div style={{background:"white",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 20px 10px",borderBottom:"1px solid #F2F2F7"}}>
+            <button onClick={()=>chMo(-1)} style={arrowBtn}>‹</button>
             <div style={{textAlign:"center"}}>
-              <div style={{fontSize:22,fontWeight:700,color:"#1C1C1E"}}>{yr}年 {MJ[mo]}</div>
-              <div style={{fontSize:11,color:"#8E8E93",marginTop:2}}>{selIsWE?"土日祝：日直・準夜勤・拘束（A班→拘束B / B班→拘束A）":"平日：準夜勤・拘束（A班→拘束B / B班→拘束A）"}</div>
+              <div style={{fontSize:20,fontWeight:700,color:"#1C1C1E"}}>{yr}年 {MJ[mo]}</div>
+              <div style={{fontSize:10,color:"#8E8E93",marginTop:2}}>
+                平日：準夜勤＋拘束　土日祝：日直＋準夜勤＋拘束
+              </div>
             </div>
-            <button onClick={()=>chMo(1)} style={{background:"none",border:"none",fontSize:26,color:"#007AFF",cursor:"pointer",lineHeight:1,padding:"0 6px"}}>›</button>
+            <button onClick={()=>chMo(1)} style={arrowBtn}>›</button>
           </div>
 
           {/* カレンダーグリッド */}
-          <div style={{background:"white",padding:"6px 10px 12px"}}>
-            {/* 曜日ヘッダー */}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",marginBottom:4}}>
+          <div style={{background:"white",padding:"6px 8px 10px"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",marginBottom:2}}>
               {WD.map((w,i)=>(
-                <div key={w} style={{textAlign:"center",fontSize:13,fontWeight:600,color:i===0?"#FF3B30":i===6?"#007AFF":"#8E8E93",padding:"4px 0"}}>{w}</div>
+                <div key={w} style={{textAlign:"center",fontSize:12,fontWeight:600,color:i===0?"#FF3B30":i===6?"#007AFF":"#8E8E93",padding:"4px 0"}}>{w}</div>
               ))}
             </div>
-            {/* 日付グリッド */}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",rowGap:6}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",rowGap:4}}>
               {cells.map((d,i)=>{
                 if(!d) return <div key={`e${i}`}/>;
                 const ds=toStr(yr,mo,d);
                 const dow=(first+d-1)%7;
-                const isHol=HOLIDAYS.has(ds);
+                const holiday=HOLIDAYS.has(ds);
                 const isToday=ds===todayStr;
                 const isSel=ds===selDs;
                 const entry=sched[ds]||{};
-                // 担当者ドット（最大4個）
-                const dots=getShifts(ds).map(sk=>staff.find(x=>x.id===entry[sk])?.color).filter(Boolean);
+                const dots=[
+                  staff.find(x=>x.id===entry.nisoku)?.color,
+                  staff.find(x=>x.id===entry.junya)?.color,
+                  (entry.oncallA||entry.oncallB)?staff.find(x=>x.id===(entry.oncallA||entry.oncallB))?.color:null,
+                ].filter(Boolean);
                 return(
-                  <div key={ds} onClick={()=>setSelDs(ds)}
-                    style={{display:"flex",flexDirection:"column",alignItems:"center",cursor:"pointer",userSelect:"none"}}>
-                    <div style={{
-                      width:38,height:38,borderRadius:"50%",
-                      display:"flex",alignItems:"center",justifyContent:"center",
-                      background:isToday?"#007AFF":isSel?"#E8F0FE":"transparent",
-                      border:isSel&&!isToday?"2px solid #007AFF":"2px solid transparent",
-                    }}>
-                      <span style={{
-                        fontSize:17,fontWeight:isToday||isSel?700:400,
-                        color:isToday?"white":isHol||dow===0?"#FF3B30":dow===6?"#007AFF":"#1C1C1E",
-                      }}>{d}</span>
+                  <div key={ds} onClick={()=>setSelDs(ds)} style={{display:"flex",flexDirection:"column",alignItems:"center",cursor:"pointer"}}>
+                    <div style={{width:36,height:36,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",background:isToday?"#007AFF":isSel?"#E8F0FE":"transparent",border:isSel&&!isToday?"2px solid #007AFF":"2px solid transparent"}}>
+                      <span style={{fontSize:16,fontWeight:isToday||isSel?700:400,color:isToday?"white":holiday||dow===0?"#FF3B30":dow===6?"#007AFF":"#1C1C1E"}}>{d}</span>
                     </div>
-                    {/* ドット */}
-                    <div style={{display:"flex",gap:2,marginTop:2,height:7,alignItems:"center"}}>
-                      {dots.slice(0,4).map((c,di)=>(
-                        <span key={di} style={{width:5,height:5,borderRadius:"50%",background:c,display:"inline-block"}}/>
-                      ))}
+                    <div style={{display:"flex",gap:2,marginTop:1,height:6}}>
+                      {dots.slice(0,3).map((c,di)=><span key={di} style={{width:5,height:5,borderRadius:"50%",background:c}}/>)}
                     </div>
                   </div>
                 );
@@ -453,39 +421,36 @@ export default function App(){
             </div>
           </div>
 
-          {/* ── 選択日 詳細パネル ── */}
-          <div style={{margin:"12px 14px",background:"white",borderRadius:18,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,0.08)"}}>
-            {/* 日付ヘッダー */}
-            <div style={{padding:"16px 18px 12px",borderBottom:"1px solid #F2F2F7",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          {/* 選択日 詳細パネル */}
+          <div style={{margin:"10px 12px",background:"white",borderRadius:18,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,0.08)"}}>
+            <div style={{padding:"14px 16px 10px",borderBottom:"1px solid #F2F2F7",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
               <div>
-                <div style={{fontSize:19,fontWeight:700,color:"#1C1C1E",marginBottom:4}}>
+                <div style={{fontSize:18,fontWeight:700,color:"#1C1C1E",marginBottom:4}}>
                   {parseInt(sM)}月{parseInt(sD)}日（{WD[selDow]}）
                 </div>
                 <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
                   {selDs===todayStr&&<Tag label="今日" bg="#007AFF" color="white"/>}
-                  {selIsHol&&<Tag label="祝日" bg="#FF3B30" color="white"/>}
-                  {!selIsHol&&selDow===0&&<Tag label="日曜日" bg="#FFE5E5" color="#FF3B30"/>}
-                  {!selIsHol&&selDow===6&&<Tag label="土曜日" bg="#E3F2FD" color="#007AFF"/>}
+                  {HOLIDAYS.has(selDs)&&<Tag label="祝日" bg="#FF3B30" color="white"/>}
+                  {!HOLIDAYS.has(selDs)&&selDow===0&&<Tag label="日曜" bg="#FFE5E5" color="#FF3B30"/>}
+                  {!HOLIDAYS.has(selDs)&&selDow===6&&<Tag label="土曜" bg="#E3F2FD" color="#007AFF"/>}
                   <Tag label={selIsWE?"土日祝シフト":"平日シフト"} bg="#F2F2F7" color="#3C3C43"/>
                 </div>
               </div>
-              <button onClick={()=>openEdit(selDs)}
-                style={{background:"#007AFF",color:"white",border:"none",borderRadius:12,padding:"9px 18px",fontSize:15,fontWeight:700,cursor:"pointer",flexShrink:0}}>
-                編集
-              </button>
+              <button onClick={()=>openEdit(selDs)} style={{background:"#007AFF",color:"white",border:"none",borderRadius:12,padding:"9px 18px",fontSize:15,fontWeight:700,cursor:"pointer"}}>編集</button>
             </div>
-            {/* シフト行 */}
-            {selShifts.map((sk,idx)=>{
+            {selDisplayShifts.map((sk,idx)=>{
               const sv=SHIFT_DEFS[sk];
               const mem=staff.find(x=>x.id===selEntry[sk]);
+              const banLabel=sk==="junya"||sk==="nisoku" ? (mem?`${mem["shift班"]}班`:"") : (mem?`拘束${sk==="oncallA"?"A":"B"}担当`:"");
               return(
-                <div key={sk} style={{display:"flex",alignItems:"center",padding:"14px 18px",borderBottom:idx<selShifts.length-1?"1px solid #F2F2F7":"none",gap:14}}>
-                  <div style={{width:44,height:44,borderRadius:12,background:sv.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{sv.icon}</div>
+                <div key={sk} style={{display:"flex",alignItems:"center",padding:"13px 16px",borderBottom:idx<selDisplayShifts.length-1?"1px solid #F2F2F7":"none",gap:12}}>
+                  <div style={{width:42,height:42,borderRadius:12,background:sv.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>{sv.icon}</div>
                   <div style={{flex:1}}>
-                    <div style={{fontSize:13,color:"#8E8E93",marginBottom:3}}>{sv.label}</div>
-                    <div style={{fontSize:17,fontWeight:600,color:mem?"#1C1C1E":"#C7C7CC"}}>{mem?mem.name:"未割り当て"}</div>
+                    <div style={{fontSize:12,color:"#8E8E93",marginBottom:2}}>{sv.label}</div>
+                    <div style={{fontSize:16,fontWeight:600,color:mem?"#1C1C1E":"#C7C7CC"}}>{mem?mem.name:"未割り当て"}</div>
+                    {mem&&banLabel&&<div style={{fontSize:11,color:"#8E8E93",marginTop:1}}>{banLabel}</div>}
                   </div>
-                  {mem&&<div style={{width:14,height:14,borderRadius:"50%",background:mem.color,flexShrink:0}}/>}
+                  {mem&&<div style={{width:12,height:12,borderRadius:"50%",background:mem.color}}/>}
                 </div>
               );
             })}
@@ -493,47 +458,47 @@ export default function App(){
         </div>
       )}
 
-      {/* ━━ 一覧タブ ━━ */}
+      {/* ━━ 一覧 ━━ */}
       {tab==="list"&&(
-        <div style={{padding:"8px 14px 24px"}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 2px 12px"}}>
-            <div style={{fontSize:20,fontWeight:700,color:"#1C1C1E"}}>{yr}年 {MJ[mo]}</div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>chMo(-1)} style={{background:"white",border:"1px solid #E5E5EA",borderRadius:10,padding:"6px 14px",color:"#007AFF",fontSize:15,cursor:"pointer",fontWeight:600}}>‹</button>
-              <button onClick={()=>chMo(1)}  style={{background:"white",border:"1px solid #E5E5EA",borderRadius:10,padding:"6px 14px",color:"#007AFF",fontSize:15,cursor:"pointer",fontWeight:600}}>›</button>
+        <div style={{padding:"8px 12px 24px"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 2px 10px"}}>
+            <div style={{fontSize:18,fontWeight:700,color:"#1C1C1E"}}>{yr}年 {MJ[mo]}</div>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={()=>chMo(-1)} style={navSmBtn}>‹</button>
+              <button onClick={()=>chMo(1)}  style={navSmBtn}>›</button>
             </div>
           </div>
           {Array.from({length:days},(_,i)=>i+1).map(d=>{
             const ds=toStr(yr,mo,d);
             const dow=(first+d-1)%7;
-            const isHol=HOLIDAYS.has(ds);const isWE=dow===0||dow===6||isHol;
-            const entry=sched[ds]||{};const isToday=ds===todayStr;
-            const shifts=getShifts(ds);
+            const holiday=HOLIDAYS.has(ds);
+            const isWE=isHol(ds);
+            const entry=sched[ds]||{};
+            const isToday=ds===todayStr;
+            const dispShifts=getDisplayShifts(ds,entry);
             return(
-              <div key={ds} onClick={()=>{setTab("cal");setSelDs(ds);}}
-                style={{background:"white",borderRadius:14,marginBottom:8,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",cursor:"pointer"}}>
-                {/* 日付バー */}
-                <div style={{display:"flex",alignItems:"center",gap:12,padding:"10px 16px",background:isToday?"#007AFF":isWE?"#FFF8F0":"#F9F9FB",borderBottom:"1px solid rgba(0,0,0,0.04)"}}>
-                  <div style={{width:42,height:42,borderRadius:11,background:isToday?"rgba(255,255,255,0.25)":isHol||dow===0?"#FFE0B2":dow===6?"#DBEAFE":"#E5E5EA",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-                    <div style={{fontSize:11,fontWeight:600,color:isToday?"white":isHol||dow===0?"#E65100":"#8E8E93",lineHeight:1}}>{WD[dow]}</div>
-                    <div style={{fontSize:19,fontWeight:700,color:isToday?"white":isHol||dow===0?"#FF3B30":dow===6?"#007AFF":"#1C1C1E",lineHeight:1.2}}>{d}</div>
+              <div key={ds} onClick={()=>{setTab("cal");setSelDs(ds);}} style={{background:"white",borderRadius:14,marginBottom:7,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",cursor:"pointer"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:isToday?"#007AFF":isWE?"#FFF8F0":"#F9F9FB",borderBottom:"1px solid rgba(0,0,0,0.04)"}}>
+                  <div style={{width:40,height:40,borderRadius:10,background:isToday?"rgba(255,255,255,0.2)":holiday||dow===0?"#FFE0B2":dow===6?"#DBEAFE":"#E5E5EA",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                    <div style={{fontSize:10,fontWeight:600,color:isToday?"white":holiday||dow===0?"#E65100":"#8E8E93",lineHeight:1}}>{WD[dow]}</div>
+                    <div style={{fontSize:18,fontWeight:700,color:isToday?"white":holiday||dow===0?"#FF3B30":dow===6?"#007AFF":"#1C1C1E",lineHeight:1.2}}>{d}</div>
                   </div>
                   <div style={{flex:1}}>
-                    <div style={{fontSize:11,color:isToday?"rgba(255,255,255,0.8)":isWE?"#FF9500":"#8E8E93",fontWeight:600,marginBottom:4}}>{isWE?"土日祝シフト":"平日シフト"}</div>
                     <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-                      {shifts.map(sk=>{
-                        const sv=SHIFT_DEFS[sk];const mem=staff.find(x=>x.id===entry[sk]);
+                      {dispShifts.map(sk=>{
+                        const sv=SHIFT_DEFS[sk];
+                        const mem=staff.find(x=>x.id===entry[sk]);
                         return mem?(
                           <div key={sk} style={{display:"inline-flex",alignItems:"center",gap:3,background:isToday?"rgba(255,255,255,0.2)":sv.bg,borderRadius:8,padding:"3px 8px",border:isToday?"1px solid rgba(255,255,255,0.3)":`1px solid ${sv.color}33`}}>
-                            <span style={{fontSize:12}}>{sv.icon}</span>
-                            <span style={{fontSize:12,fontWeight:600,color:isToday?"white":sv.color}}>{sv.label}</span>
-                            <span style={{fontSize:12,color:isToday?"rgba(255,255,255,0.9)":"#1C1C1E"}}>{mem.name}</span>
+                            <span style={{fontSize:11}}>{sv.icon}</span>
+                            <span style={{fontSize:11,fontWeight:600,color:isToday?"white":sv.color}}>{sv.label}</span>
+                            <span style={{fontSize:11,color:isToday?"rgba(255,255,255,0.9)":"#1C1C1E"}}>{mem.name}</span>
                           </div>
                         ):null;
                       })}
                     </div>
                   </div>
-                  {isHol&&<span style={{fontSize:11,background:"#FF3B30",color:"white",borderRadius:6,padding:"2px 6px",flexShrink:0,fontWeight:600}}>祝</span>}
+                  {holiday&&<span style={{fontSize:10,background:"#FF3B30",color:"white",borderRadius:5,padding:"2px 5px",flexShrink:0,fontWeight:600}}>祝</span>}
                 </div>
               </div>
             );
@@ -541,36 +506,40 @@ export default function App(){
         </div>
       )}
 
-      {/* ━━ 集計タブ ━━ */}
+      {/* ━━ 集計 ━━ */}
       {tab==="stats"&&(
-        <div style={{padding:"8px 14px 24px"}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 2px 12px"}}>
-            <div style={{fontSize:20,fontWeight:700,color:"#1C1C1E"}}>{yr}年 {MJ[mo]}</div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>chMo(-1)} style={{background:"white",border:"1px solid #E5E5EA",borderRadius:10,padding:"6px 14px",color:"#007AFF",fontSize:15,cursor:"pointer",fontWeight:600}}>‹</button>
-              <button onClick={()=>chMo(1)}  style={{background:"white",border:"1px solid #E5E5EA",borderRadius:10,padding:"6px 14px",color:"#007AFF",fontSize:15,cursor:"pointer",fontWeight:600}}>›</button>
+        <div style={{padding:"8px 12px 24px"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 2px 10px"}}>
+            <div style={{fontSize:18,fontWeight:700,color:"#1C1C1E"}}>{yr}年 {MJ[mo]}</div>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={()=>chMo(-1)} style={navSmBtn}>‹</button>
+              <button onClick={()=>chMo(1)}  style={navSmBtn}>›</button>
             </div>
           </div>
           {staff.map(s=>{
             const cnt=stats[s.id]||{nisoku:0,junya:0,oncallA:0,oncallB:0};
             const total=Object.values(cnt).reduce((a,b)=>a+b,0);
             return(
-              <div key={s.id} style={{background:"white",borderRadius:16,marginBottom:10,padding:"16px 18px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}}>
-                <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
-                  <div style={{width:44,height:44,borderRadius:"50%",background:s.color+"20",border:`2.5px solid ${s.color}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,color:s.color,fontWeight:800,flexShrink:0}}>{s.name[0]}</div>
-                  <div>
-                    <div style={{fontSize:17,fontWeight:700,color:"#1C1C1E"}}>{s.name}</div>
-                    <div style={{fontSize:13,color:"#8E8E93"}}>今月合計 {total} 回</div>
+              <div key={s.id} style={{background:"white",borderRadius:16,marginBottom:10,padding:"14px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+                  <div style={{width:40,height:40,borderRadius:"50%",background:s.color+"20",border:`2px solid ${s.color}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,color:s.color,fontWeight:800,flexShrink:0}}>{s.name[0]}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:15,fontWeight:700,color:"#1C1C1E"}}>{s.name}</div>
+                    <div style={{display:"flex",gap:6,marginTop:2}}>
+                      <Tag label={`${s["shift班"]}班`} bg={s["shift班"]==="A"?"#E3F2FD":"#FFF3E0"} color={s["shift班"]==="A"?"#007AFF":"#FF9500"}/>
+                      <Tag label={`拘束${s["拘束分類"]}`} bg={s["拘束分類"]==="A"?"#EDFBF0":"#F5EEFF"} color={s["拘束分類"]==="A"?"#34C759":"#AF52DE"}/>
+                    </div>
                   </div>
+                  <div style={{fontSize:12,color:"#8E8E93"}}>合計 {total} 回</div>
                 </div>
                 {Object.entries(SHIFT_DEFS).map(([k,v])=>(
-                  <div key={k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-                    <div style={{width:32,height:32,borderRadius:9,background:v.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{v.icon}</div>
-                    <div style={{fontSize:14,color:"#3C3C43",width:58,flexShrink:0,fontWeight:500}}>{v.label}</div>
-                    <div style={{flex:1,height:8,background:"#F2F2F7",borderRadius:4,overflow:"hidden"}}>
-                      <div style={{height:"100%",width:`${Math.min(100,(cnt[k]||0)/6*100)}%`,background:v.color,borderRadius:4,transition:"width 0.4s"}}/>
+                  <div key={k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                    <div style={{width:30,height:30,borderRadius:8,background:v.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{v.icon}</div>
+                    <div style={{fontSize:13,color:"#3C3C43",width:56,flexShrink:0}}>{v.label}</div>
+                    <div style={{flex:1,height:7,background:"#F2F2F7",borderRadius:3,overflow:"hidden"}}>
+                      <div style={{height:"100%",width:`${Math.min(100,(cnt[k]||0)/6*100)}%`,background:v.color,borderRadius:3}}/>
                     </div>
-                    <div style={{fontSize:17,fontWeight:700,color:v.color,minWidth:24,textAlign:"right"}}>{cnt[k]||0}</div>
+                    <div style={{fontSize:16,fontWeight:700,color:v.color,minWidth:22,textAlign:"right"}}>{cnt[k]||0}</div>
                   </div>
                 ))}
               </div>
@@ -579,216 +548,221 @@ export default function App(){
         </div>
       )}
 
-      {/* ━━ 通知タブ ━━ */}
+      {/* ━━ 通知 ━━ */}
       {tab==="notif"&&(
-        <div style={{padding:"8px 14px 24px"}}>
-          <div style={{fontSize:20,fontWeight:700,color:"#1C1C1E",padding:"10px 2px 12px"}}>🔔 通知履歴</div>
+        <div style={{padding:"8px 12px 24px"}}>
+          <div style={{fontSize:18,fontWeight:700,color:"#1C1C1E",padding:"8px 2px 12px"}}>🔔 通知履歴</div>
           {notifs.length===0
-            ?<div style={{background:"white",borderRadius:16,padding:"48px 20px",textAlign:"center",color:"#8E8E93",fontSize:15}}>通知はありません</div>
+            ?<div style={{background:"white",borderRadius:16,padding:"40px 20px",textAlign:"center",color:"#8E8E93",fontSize:14}}>通知はありません</div>
             :notifs.map(n=>(
-              <div key={n.id} style={{background:"white",borderRadius:14,padding:"14px 16px",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
-                <span style={{fontSize:14,color:"#1C1C1E",flex:1,marginRight:10}}>✅ {n.msg}</span>
-                <span style={{color:"#8E8E93",fontSize:12,flexShrink:0}}>{n.time}</span>
+              <div key={n.id} style={{background:"white",borderRadius:12,padding:"12px 14px",marginBottom:7,display:"flex",justifyContent:"space-between",alignItems:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
+                <span style={{fontSize:13,color:"#1C1C1E",flex:1,marginRight:8}}>✅ {n.msg}</span>
+                <span style={{color:"#8E8E93",fontSize:11,flexShrink:0}}>{n.time}</span>
               </div>
             ))
           }
         </div>
       )}
 
-      {/* ━━━━━━ シフト全クリア確認 ━━━━━━ */}
+      {/* ━━━━━━ 全クリア確認 ━━━━━━ */}
       {clearConf&&(
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500,padding:24}}>
-          <div style={{background:"white",borderRadius:20,width:"100%",maxWidth:340,padding:28,boxShadow:"0 8px 40px rgba(0,0,0,0.2)"}}>
-            <div style={{textAlign:"center",marginBottom:20}}>
-              <div style={{fontSize:44,marginBottom:12}}>🗑️</div>
-              <div style={{fontSize:18,fontWeight:700,color:"#1C1C1E",marginBottom:8}}>シフトをクリア</div>
-              <div style={{fontSize:14,color:"#8E8E93",lineHeight:1.6}}>
-                {yr}年{MJ[mo]}の<br/>シフトをすべて削除します。<br/>この操作は元に戻せません。
-              </div>
-            </div>
+          <div style={{background:"white",borderRadius:20,width:"100%",maxWidth:320,padding:26,textAlign:"center"}}>
+            <div style={{fontSize:40,marginBottom:10}}>🗑️</div>
+            <div style={{fontSize:17,fontWeight:700,color:"#1C1C1E",marginBottom:8}}>シフトをクリア</div>
+            <div style={{fontSize:13,color:"#8E8E93",marginBottom:20,lineHeight:1.6}}>{yr}年{MJ[mo]}のシフトを<br/>すべて削除します。</div>
             <div style={{display:"flex",gap:10}}>
-              <button onClick={()=>setClearConf(false)}
-                style={{flex:1,padding:"13px 0",background:"#F2F2F7",color:"#1C1C1E",border:"none",borderRadius:14,cursor:"pointer",fontSize:15,fontWeight:600}}>
-                キャンセル
-              </button>
-              <button onClick={clearAllShifts}
-                style={{flex:1,padding:"13px 0",background:"#FF3B30",color:"white",border:"none",borderRadius:14,cursor:"pointer",fontSize:15,fontWeight:700}}>
-                クリアする
-              </button>
+              <button onClick={()=>setClearConf(false)} style={cancelBtn}>キャンセル</button>
+              <button onClick={clearAllShifts} style={{...primaryBtn,background:"#FF3B30"}}>クリア</button>
             </div>
           </div>
         </div>
       )}
 
       {/* ━━━━━━ 編集モーダル ━━━━━━ */}
-      {editOpen&&(()=>{
-        const baseShifts=isHolidayOrWeekend(selDs)?["nisoku","junya"]:["junya"];
-        // 現在どちらの拘束が入っているか
-        const currentOncall=editData.oncallB?"B":"A";
-        return(
-          <Sheet onClose={()=>setEditOpen(false)} title="シフト編集" sub={`${parseInt(sM)}月${parseInt(sD)}日（${WD[selDow]}）${selIsWE?"・土日祝":""}`}>
-            {/* 基本シフト（日直・準夜勤）*/}
-            {baseShifts.map(sk=>{
-              const sv=SHIFT_DEFS[sk];
-              return(
-                <div key={sk} style={{marginBottom:16}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                    <div style={{width:32,height:32,borderRadius:9,background:sv.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17}}>{sv.icon}</div>
-                    <span style={{fontSize:15,fontWeight:600,color:"#1C1C1E"}}>{sv.label}</span>
-                  </div>
-                  <select value={editData[sk]||""} onChange={e=>setEditData(p=>({...p,[sk]:Number(e.target.value)||null}))}
-                    style={{width:"100%",padding:"13px 14px",background:"#F2F2F7",border:"none",borderRadius:12,fontSize:15,color:"#1C1C1E",outline:"none",appearance:"none",WebkitAppearance:"none",boxSizing:"border-box"}}>
-                    <option value="">— 未割り当て —</option>
-                    {staff.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-              );
-            })}
-            {/* 拘束 択一選択 */}
-            <div style={{marginBottom:16}}>
-              <div style={{fontSize:13,color:"#8E8E93",marginBottom:8,fontWeight:600}}>📗 拘束（A/Bどちらか選択）</div>
-              {/* 担当者を選ぶ → 班に応じて拘束A/Bが自動決定 */}
-              <div style={{background:"#F9F9FB",borderRadius:10,padding:"10px 12px",marginBottom:10,fontSize:12,color:"#8E8E93",lineHeight:1.7}}>
-                A班メンバーを選択 → 拘束Bが自動設定<br/>
-                B班メンバーを選択 → 拘束Aが自動設定
+      {editOpen&&(
+        <Sheet onClose={()=>setEditOpen(false)} title="シフト編集" sub={`${parseInt(sM)}月${parseInt(sD)}日（${WD[selDow]}）${selIsWE?"・土日祝":""}`}>
+          {/* 日直（土日祝のみ） */}
+          {selIsWE&&(
+            <ShiftRow sv={SHIFT_DEFS.nisoku} label="日直" val={editData.nisoku||""} staff={staff}
+              filterLabel="shift班" onChange={v=>{
+                const id=Number(v)||null;
+                setEditData(p=>({...p,nisoku:id}));
+              }}/>
+          )}
+          {/* 準夜勤 */}
+          <ShiftRow sv={SHIFT_DEFS.junya} label="準夜勤" val={editData.junya||""} staff={staff}
+            filterLabel="shift班" onChange={v=>{
+              const id=Number(v)||null;
+              setEditData(p=>({...p,junya:id}));
+            }}/>
+          {/* 拘束（自動判定）*/}
+          <div style={{marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+              <div style={{width:32,height:32,borderRadius:9,background:"#F2F2F7",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17}}>📗</div>
+              <div>
+                <span style={{fontSize:15,fontWeight:600,color:"#1C1C1E"}}>拘束</span>
+                {自動拘束種別&&(
+                  <span style={{marginLeft:8,fontSize:12,fontWeight:700,
+                    color:自動拘束種別==="oncallB"?"#AF52DE":"#34C759",
+                    background:自動拘束種別==="oncallB"?"#F5EEFF":"#EDFBF0",
+                    borderRadius:6,padding:"1px 7px"}}>
+                    {自動拘束種別==="oncallB"?"→ 拘束B（A班担当）":"→ 拘束A（B班担当）"}
+                  </span>
+                )}
               </div>
-              <select
-                value={editData.oncallA||editData.oncallB||""}
-                onChange={e=>{
-                  const id=Number(e.target.value)||null;
-                  if(!id){ setEditData(p=>({...p,oncallA:null,oncallB:null})); return; }
-                  const member=staff.find(s=>s.id===id);
-                  if(member?.oncallType==="A"){
-                    // A班 → 拘束B
-                    setEditData(p=>({...p,oncallB:id,oncallA:null}));
-                  } else {
-                    // B班 → 拘束A
-                    setEditData(p=>({...p,oncallA:id,oncallB:null}));
-                  }
-                }}
-                style={{width:"100%",padding:"13px 14px",background:"#F2F2F7",border:"none",borderRadius:12,fontSize:15,color:"#1C1C1E",outline:"none",appearance:"none",WebkitAppearance:"none",boxSizing:"border-box",marginBottom:8}}>
-                <option value="">— 未割り当て —</option>
-                <optgroup label="📗 A班（選択すると拘束Bに設定）">
-                  {staff.filter(s=>s.oncallType==="A").map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-                </optgroup>
-                <optgroup label="📘 B班（選択すると拘束Aに設定）">
-                  {staff.filter(s=>s.oncallType==="B").map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-                </optgroup>
-              </select>
-              {/* 自動設定された拘束種別を表示 */}
-              {(editData.oncallA||editData.oncallB)&&(
-                <div style={{
-                  padding:"8px 12px",borderRadius:10,fontSize:13,fontWeight:700,textAlign:"center",
-                  background:editData.oncallB?"#F5EEFF":"#EDFBF0",
-                  color:editData.oncallB?"#AF52DE":"#34C759",
-                  border:`1px solid ${editData.oncallB?"#AF52DE44":"#34C75944"}`
-                }}>
-                  {editData.oncallB?"📘 拘束B（A班担当）に自動設定されました":"📗 拘束A（B班担当）に自動設定されました"}
-                </div>
+            </div>
+            <div style={{fontSize:11,color:"#8E8E93",marginBottom:8,background:"#F9F9FB",padding:"8px 10px",borderRadius:8,lineHeight:1.7}}>
+              準夜勤{selIsWE?"・日直":""}がA班 → 拘束Bと組む（拘束B担当者が入る）<br/>
+              準夜勤{selIsWE?"・日直":""}がB班 → 拘束Aと組む（拘束A担当者が入る）
+            </div>
+            <select
+              value={(自動拘束種別==="oncallB"?editData.oncallB:editData.oncallA)||""}
+              onChange={e=>{
+                const id=Number(e.target.value)||null;
+                if(自動拘束種別==="oncallB"){
+                  setEditData(p=>({...p,oncallB:id,oncallA:null}));
+                } else {
+                  setEditData(p=>({...p,oncallA:id,oncallB:null}));
+                }
+              }}
+              style={{width:"100%",padding:"13px 14px",background:"#F2F2F7",border:"none",borderRadius:12,fontSize:15,color:"#1C1C1E",outline:"none",appearance:"none",WebkitAppearance:"none",boxSizing:"border-box"}}>
+              <option value="">— 未割り当て —</option>
+              {自動拘束種別&&(
+                <>
+                  <optgroup label={自動拘束種別==="oncallB"?"── 拘束B担当者 ──":"── 拘束A担当者 ──"}>
+                    {staff.filter(s=>s["拘束分類"]===(自動拘束種別==="oncallB"?"B":"A")).map(s=>(
+                      <option key={s.id} value={s.id}>{s.name}（拘束{s["拘束分類"]}）</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="── その他 ──">
+                    {staff.filter(s=>s["拘束分類"]!==(自動拘束種別==="oncallB"?"B":"A")).map(s=>(
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </optgroup>
+                </>
               )}
-            </div>
-            <div style={{display:"flex",gap:10,marginTop:6}}>
-              <button onClick={()=>setEditOpen(false)} style={cancelBtn}>キャンセル</button>
-              <button onClick={saveEdit} style={primaryBtn}>保存</button>
-            </div>
-          </Sheet>
-        );
-      })()}
+              {!自動拘束種別&&staff.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+          <div style={{display:"flex",gap:10,marginTop:6}}>
+            <button onClick={()=>setEditOpen(false)} style={cancelBtn}>キャンセル</button>
+            <button onClick={saveEdit} style={primaryBtn}>保存</button>
+          </div>
+        </Sheet>
+      )}
 
       {/* ━━━━━━ 設定パネル ━━━━━━ */}
       {settOpen&&(
         <Sheet onClose={()=>{setSettOpen(false);closeMaster();}} title="設定" noPad>
-          {/* タブ */}
-          <div style={{display:"flex",borderBottom:"1px solid #E5E5EA",marginBottom:0}}>
+          <div style={{display:"flex",borderBottom:"1px solid #E5E5EA"}}>
             {[["member","👤 メンバー"],["master","📋 マスター"]].map(([k,l])=>(
-              <button key={k} onClick={()=>{setSettTab(k);k==="master"?openMaster():closeMaster();}} style={{flex:1,padding:"11px 0",background:"none",border:"none",borderBottom:settTab===k?"2.5px solid #007AFF":"2.5px solid transparent",color:settTab===k?"#007AFF":"#8E8E93",fontSize:14,fontWeight:600,cursor:"pointer"}}>{l}</button>
+              <button key={k} onClick={()=>{setSettTab(k);k==="master"?openMaster():closeMaster();}} style={{flex:1,padding:"10px 0",background:"none",border:"none",borderBottom:settTab===k?"2.5px solid #007AFF":"2.5px solid transparent",color:settTab===k?"#007AFF":"#8E8E93",fontSize:13,fontWeight:600,cursor:"pointer"}}>{l}</button>
             ))}
           </div>
-          <div style={{padding:"16px",overflowY:"auto",flex:1}}>
+          <div style={{padding:"14px 16px",overflowY:"auto",flex:1}}>
 
-            {/* ── メンバータブ ── */}
+            {/* メンバータブ */}
             {settTab==="member"&&(<>
-              {/* 追加・編集フォーム */}
-              <div style={{background:"#F9F9FB",borderRadius:14,padding:16,marginBottom:16,border:"1px solid #E5E5EA"}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#8E8E93",marginBottom:12}}>
-                  {editMember?`✎ 編集中：${editMember.name}`:`＋ 新しいメンバーを追加（${staff.length}/${MAX_STAFF}名）`}
+              <div style={{background:"#F9F9FB",borderRadius:14,padding:14,marginBottom:14,border:"1px solid #E5E5EA"}}>
+                <div style={{fontSize:12,fontWeight:700,color:"#8E8E93",marginBottom:10}}>
+                  {editMember?`✎ 編集中：${editMember.name}`:`＋ 追加（${staff.length}/${MAX_STAFF}名）`}
                 </div>
                 {!editMember&&staff.length>=MAX_STAFF
-                  ?<div style={{color:"#FF3B30",fontSize:14}}>スタッフ数が上限（{MAX_STAFF}名）に達しています</div>
+                  ?<div style={{color:"#FF3B30",fontSize:13}}>上限に達しています</div>
                   :(<>
-                    <div style={{fontSize:12,color:"#8E8E93",marginBottom:5}}>氏名</div>
-                    <input value={mForm.name} onChange={e=>setMForm(p=>({...p,name:e.target.value}))}
-                      placeholder="例：田中 一郎"
-                      style={{width:"100%",padding:"13px 14px",background:"white",border:"1px solid #E5E5EA",borderRadius:12,fontSize:15,color:"#1C1C1E",outline:"none",boxSizing:"border-box",marginBottom:14}}/>
-                    <div style={{fontSize:12,color:"#8E8E93",marginBottom:8}}>カラー</div>
-                    <div style={{display:"flex",flexWrap:"wrap",gap:9,marginBottom:16}}>
+                    <input value={mForm.name} onChange={e=>setMForm(p=>({...p,name:e.target.value}))} placeholder="氏名を入力"
+                      style={{width:"100%",padding:"11px 12px",background:"white",border:"1px solid #E5E5EA",borderRadius:10,fontSize:14,color:"#1C1C1E",outline:"none",boxSizing:"border-box",marginBottom:10}}/>
+                    {/* カラー */}
+                    <div style={{fontSize:11,color:"#8E8E93",marginBottom:6}}>カラー</div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
                       {COLOR_OPTIONS.map(c=>(
                         <div key={c} onClick={()=>setMForm(p=>({...p,color:c}))}
-                          style={{width:30,height:30,borderRadius:"50%",background:c,cursor:"pointer",border:mForm.color===c?"3px solid white":"3px solid transparent",boxShadow:mForm.color===c?`0 0 0 2.5px ${c}`:"none",transition:"all 0.12s"}}/>
+                          style={{width:26,height:26,borderRadius:"50%",background:c,cursor:"pointer",border:mForm.color===c?"3px solid white":"3px solid transparent",boxShadow:mForm.color===c?`0 0 0 2px ${c}`:"none"}}/>
                       ))}
                     </div>
-                    {/* 拘束区分 A/B 選択 */}
-                    <div style={{fontSize:12,color:"#8E8E93",marginBottom:8}}>拘束区分</div>
-                    <div style={{display:"flex",gap:8,marginBottom:16}}>
+                    {/* 勤務班 */}
+                    <div style={{fontSize:11,color:"#8E8E93",marginBottom:6}}>勤務班（準夜勤・日直に使用）</div>
+                    <div style={{display:"flex",gap:8,marginBottom:12}}>
                       {["A","B"].map(t=>(
-                        <div key={t} onClick={()=>setMForm(p=>({...p,oncallType:t}))}
-                          style={{flex:1,padding:"10px 0",borderRadius:12,textAlign:"center",cursor:"pointer",fontWeight:700,fontSize:15,
-                            background:mForm.oncallType===t?(t==="A"?"#34C759":"#AF52DE"):"#F2F2F7",
-                            color:mForm.oncallType===t?"white":"#8E8E93",
-                            border:mForm.oncallType===t?`2px solid ${t==="A"?"#34C759":"#AF52DE"}`:"2px solid transparent",
-                            transition:"all 0.15s"}}>
-                          {t==="A"?"📗 A班（拘束A）":"📘 B班（拘束B）"}
-                        </div>
+                        <button key={t} onClick={()=>setMForm(p=>({...p,"shift班":t}))}
+                          style={{flex:1,padding:"10px 0",borderRadius:10,fontWeight:700,fontSize:14,cursor:"pointer",border:"none",
+                            background:mForm["shift班"]===t?(t==="A"?"#007AFF":"#FF9500"):"#F2F2F7",
+                            color:mForm["shift班"]===t?"white":"#8E8E93"}}>
+                          {t}班
+                        </button>
                       ))}
                     </div>
-                    <div style={{fontSize:11,color:"#8E8E93",marginBottom:14,lineHeight:1.6}}>
-                      ※ マスター未設定時は拘束A・Bの区分に従い自動割り当てされます
+                    {/* 拘束分類 */}
+                    <div style={{fontSize:11,color:"#8E8E93",marginBottom:6}}>拘束分類（拘束担当に使用）</div>
+                    <div style={{display:"flex",gap:8,marginBottom:14}}>
+                      {["A","B"].map(t=>(
+                        <button key={t} onClick={()=>setMForm(p=>({...p,"拘束分類":t}))}
+                          style={{flex:1,padding:"10px 0",borderRadius:10,fontWeight:700,fontSize:14,cursor:"pointer",border:"none",
+                            background:mForm["拘束分類"]===t?(t==="A"?"#34C759":"#AF52DE"):"#F2F2F7",
+                            color:mForm["拘束分類"]===t?"white":"#8E8E93"}}>
+                          拘束{t}
+                        </button>
+                      ))}
                     </div>
                     <div style={{display:"flex",gap:8}}>
-                      {editMember&&<button onClick={()=>{setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[0]});}} style={cancelBtn}>キャンセル</button>}
-                      <button onClick={saveMember} disabled={!mForm.name.trim()}
-                        style={{...primaryBtn,background:mForm.name.trim()?"#007AFF":"#C7C7CC",cursor:mForm.name.trim()?"pointer":"not-allowed",flex:2}}>
+                      {editMember&&<button onClick={()=>{setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[0],"shift班":"A","拘束分類":"A"});}} style={cancelBtn}>キャンセル</button>}
+                      <button onClick={saveMember} disabled={!mForm.name.trim()} style={{...primaryBtn,background:mForm.name.trim()?"#007AFF":"#C7C7CC",cursor:mForm.name.trim()?"pointer":"not-allowed",flex:2}}>
                         {editMember?"更新する":"追加する"}
                       </button>
                     </div>
                   </>)
                 }
               </div>
-              {/* メンバーリスト */}
-              <div style={{fontSize:12,color:"#8E8E93",marginBottom:8,paddingLeft:2}}>登録メンバー（{staff.length}名）</div>
+              <div style={{fontSize:11,color:"#8E8E93",marginBottom:8}}>メンバー一覧（{staff.length}名）</div>
               <div style={{background:"white",borderRadius:14,overflow:"hidden",border:"1px solid #E5E5EA"}}>
                 {staff.map((s,idx)=>(
-                  <div key={s.id} style={{display:"flex",alignItems:"center",padding:"13px 16px",borderBottom:idx<staff.length-1?"1px solid #F2F2F7":"none",gap:12}}>
-                    <div style={{width:38,height:38,borderRadius:"50%",background:s.color+"20",border:`2px solid ${s.color}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,color:s.color,fontWeight:800,flexShrink:0}}>{s.name[0]}</div>
+                  <div key={s.id} style={{display:"flex",alignItems:"center",padding:"11px 14px",borderBottom:idx<staff.length-1?"1px solid #F2F2F7":"none",gap:10}}>
+                    <div style={{width:34,height:34,borderRadius:"50%",background:s.color+"20",border:`2px solid ${s.color}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:s.color,fontWeight:800,flexShrink:0}}>{s.name[0]}</div>
                     <div style={{flex:1}}>
-                      <div style={{fontSize:15,fontWeight:500,color:"#1C1C1E"}}>{s.name}</div>
-                      <div style={{fontSize:11,color:"white",background:s.oncallType==="A"?"#34C759":"#AF52DE",borderRadius:6,padding:"1px 7px",display:"inline-block",marginTop:2,fontWeight:700}}>
-                        {s.oncallType==="A"?"📗 A班":"📘 B班"}
+                      <div style={{fontSize:14,fontWeight:600,color:"#1C1C1E"}}>{s.name}</div>
+                      <div style={{display:"flex",gap:5,marginTop:2}}>
+                        <Tag label={`${s["shift班"]}班`} bg={s["shift班"]==="A"?"#E3F2FD":"#FFF3E0"} color={s["shift班"]==="A"?"#007AFF":"#FF9500"}/>
+                        <Tag label={`拘束${s["拘束分類"]}`} bg={s["拘束分類"]==="A"?"#EDFBF0":"#F5EEFF"} color={s["拘束分類"]==="A"?"#34C759":"#AF52DE"}/>
                       </div>
                     </div>
-                    <button onClick={()=>startEdit(s)} style={{background:"#EEF4FF",color:"#007AFF",border:"none",borderRadius:9,padding:"6px 13px",fontSize:13,cursor:"pointer",fontWeight:600,marginRight:4}}>編集</button>
+                    <button onClick={()=>startEdit(s)} style={{background:"#EEF4FF",color:"#007AFF",border:"none",borderRadius:8,padding:"5px 10px",fontSize:12,cursor:"pointer",fontWeight:600}}>編集</button>
                     {delConf===s.id
-                      ?<div style={{display:"flex",gap:5}}>
-                        <button onClick={()=>delMember(s.id)} style={{background:"#FF3B30",color:"white",border:"none",borderRadius:9,padding:"6px 10px",fontSize:13,cursor:"pointer",fontWeight:600}}>削除</button>
-                        <button onClick={()=>setDelConf(null)} style={{background:"#F2F2F7",color:"#8E8E93",border:"none",borderRadius:9,padding:"6px 10px",fontSize:13,cursor:"pointer"}}>戻る</button>
+                      ?<div style={{display:"flex",gap:4}}>
+                        <button onClick={()=>delMember(s.id)} style={{background:"#FF3B30",color:"white",border:"none",borderRadius:8,padding:"5px 8px",fontSize:12,cursor:"pointer",fontWeight:600}}>削除</button>
+                        <button onClick={()=>setDelConf(null)} style={{background:"#F2F2F7",color:"#8E8E93",border:"none",borderRadius:8,padding:"5px 8px",fontSize:12,cursor:"pointer"}}>戻る</button>
                       </div>
-                      :<button onClick={()=>setDelConf(s.id)} style={{background:"#FFEBEE",color:"#FF3B30",border:"none",borderRadius:9,padding:"6px 10px",fontSize:13,cursor:"pointer",fontWeight:600}}>削除</button>
+                      :<button onClick={()=>setDelConf(s.id)} style={{background:"#FFEBEE",color:"#FF3B30",border:"none",borderRadius:8,padding:"5px 8px",fontSize:12,cursor:"pointer",fontWeight:600}}>削除</button>
                     }
                   </div>
                 ))}
               </div>
             </>)}
 
-            {/* ── マスタータブ ── */}
+            {/* マスタータブ */}
             {settTab==="master"&&dWD&&(<>
-              <div style={{background:"#FFFDE7",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:13,color:"#795548",lineHeight:1.8,border:"1px solid #FFF176"}}>
-                💡 各シフトの担当順を設定します。順番通りに繰り返し割り当てられます。
+              <div style={{background:"#FFF8E1",borderRadius:10,padding:"10px 12px",marginBottom:12,fontSize:12,color:"#795548",lineHeight:1.7,border:"1px solid #FFF176"}}>
+                💡 各シフトの担当順を設定。「今月に適用」で再生成されます。
               </div>
-              <MasterSec title="📅 平日シフト" color="#34C759" draft={dWD} shifts={["junya","oncallA","oncallB"]} staff={staff}
-                onAdd={(sk,sid)=>addMR("wd",sk,sid)} onRem={i=>remMR("wd",i)} onMov={(i,d)=>movMR("wd",i,d)}/>
-              <div style={{height:12}}/>
-              <MasterSec title="🏖️ 土日祝シフト" color="#FF9500" draft={dWE} shifts={["nisoku","junya","oncallA","oncallB"]} staff={staff}
-                onAdd={(sk,sid)=>addMR("we",sk,sid)} onRem={i=>remMR("we",i)} onMov={(i,d)=>movMR("we",i,d)}/>
+              <MasterSec title="📅 平日シフト" color="#34C759" draft={dWD}
+                shifts={[
+                  {key:"junya_A",label:"準夜勤（A班順番）",icon:"🌙"},
+                  {key:"junya_B",label:"準夜勤（B班順番）",icon:"🌙"},
+                  {key:"oncallA",label:"拘束A担当順番",icon:"📗"},
+                  {key:"oncallB",label:"拘束B担当順番",icon:"📘"},
+                ]}
+                staff={staff} onAdd={(sk,sid)=>addMR("wd",sk,sid)} onRem={i=>remMR("wd",i)} onMov={(i,d)=>movMR("wd",i,d)}/>
+              <div style={{height:10}}/>
+              <MasterSec title="🏖️ 土日祝シフト" color="#FF9500" draft={dWE}
+                shifts={[
+                  {key:"nisoku_A",label:"日直（A班順番）",icon:"☀️"},
+                  {key:"nisoku_B",label:"日直（B班順番）",icon:"☀️"},
+                  {key:"junya_A",label:"準夜勤（A班順番）",icon:"🌙"},
+                  {key:"junya_B",label:"準夜勤（B班順番）",icon:"🌙"},
+                  {key:"oncallA",label:"拘束A担当順番",icon:"📗"},
+                  {key:"oncallB",label:"拘束B担当順番",icon:"📘"},
+                ]}
+                staff={staff} onAdd={(sk,sid)=>addMR("we",sk,sid)} onRem={i=>remMR("we",i)} onMov={(i,d)=>movMR("we",i,d)}/>
               <div style={{display:"flex",gap:10,marginTop:14}}>
                 <button onClick={closeMaster} style={cancelBtn}>キャンセル</button>
                 <button onClick={saveMaster} style={{...primaryBtn,flex:2}}>✅ 今月に適用</button>
@@ -801,34 +775,25 @@ export default function App(){
       {/* ━━━━━━ 同期パネル ━━━━━━ */}
       {syncOpen&&(
         <Sheet onClose={()=>setSyncOpen(false)} title="☁️ スプレッドシート連携">
-          <div style={{background:"#F9F9FB",borderRadius:12,padding:"12px 14px",marginBottom:14,fontSize:13,color:"#3C3C43",lineHeight:1.9,border:"1px solid #E5E5EA"}}>
+          <div style={{background:"#F9F9FB",borderRadius:12,padding:"12px 14px",marginBottom:12,fontSize:12,color:"#3C3C43",lineHeight:1.9,border:"1px solid #E5E5EA"}}>
             <div style={{fontWeight:700,color:"#1C1C1E",marginBottom:4}}>設定手順</div>
             <div>1. Googleスプレッドシートを新規作成</div>
-            <div>2. 拡張機能 → Apps Script を開く</div>
-            <div>3. gas-script.gs のコードを貼り付けてデプロイ</div>
-            <div>4. 「全員に公開」で発行されたURLを入力</div>
+            <div>2. 拡張機能 → Apps Script → gas-script.gs を貼り付け</div>
+            <div>3. デプロイ → 全員に公開 → URLをコピー</div>
           </div>
-          <div style={{fontSize:13,color:"#8E8E93",marginBottom:6}}>Apps Script URL</div>
           <input value={gasUrl} onChange={e=>setGasUrl(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec"
-            style={{width:"100%",padding:"13px 14px",background:"#F2F2F7",border:"none",borderRadius:12,fontSize:14,color:"#1C1C1E",outline:"none",boxSizing:"border-box",marginBottom:10}}/>
+            style={{width:"100%",padding:"11px 12px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:13,color:"#1C1C1E",outline:"none",boxSizing:"border-box",marginBottom:10}}/>
           {/* 自動同期トグル */}
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"#F9F9FB",borderRadius:12,padding:"12px 14px",marginBottom:10,border:"1px solid #E5E5EA"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"#F9F9FB",borderRadius:10,padding:"10px 12px",marginBottom:10,border:"1px solid #E5E5EA"}}>
             <div>
-              <div style={{fontSize:14,fontWeight:600,color:"#1C1C1E"}}>自動同期</div>
-              <div style={{fontSize:11,color:"#8E8E93",marginTop:1}}>起動時の読み込み・保存時の自動送信</div>
+              <div style={{fontSize:13,fontWeight:600,color:"#1C1C1E"}}>自動同期</div>
+              <div style={{fontSize:11,color:"#8E8E93"}}>起動時読込・保存時自動送信</div>
             </div>
-            <div onClick={()=>setAutoSync(p=>!p)}
-              style={{width:50,height:28,borderRadius:14,background:autoSync?"#34C759":"#E5E5EA",cursor:"pointer",position:"relative",transition:"background 0.2s",flexShrink:0}}>
-              <div style={{position:"absolute",top:3,left:autoSync?24:3,width:22,height:22,borderRadius:"50%",background:"white",boxShadow:"0 1px 4px rgba(0,0,0,0.2)",transition:"left 0.2s"}}/>
+            <div onClick={()=>setAutoSync(p=>!p)} style={{width:48,height:26,borderRadius:13,background:autoSync?"#34C759":"#E5E5EA",cursor:"pointer",position:"relative",transition:"background 0.2s",flexShrink:0}}>
+              <div style={{position:"absolute",top:2,left:autoSync?22:2,width:22,height:22,borderRadius:"50%",background:"white",boxShadow:"0 1px 4px rgba(0,0,0,0.2)",transition:"left 0.2s"}}/>
             </div>
           </div>
-          {syncMsg&&(
-            <div style={{padding:"9px 12px",borderRadius:10,marginBottom:10,fontSize:13,fontWeight:600,
-              background:syncSt==="ok"?"#E8F5E9":syncSt==="error"?"#FFEBEE":"#FFFDE7",
-              color:syncSt==="ok"?"#2E7D32":syncSt==="error"?"#C62828":"#F57F17"}}>
-              {syncMsg}
-            </div>
-          )}
+          {syncMsg&&<div style={{padding:"8px 10px",borderRadius:9,marginBottom:10,fontSize:12,fontWeight:600,background:syncSt==="ok"?"#E8F5E9":syncSt==="error"?"#FFEBEE":"#FFFDE7",color:syncSt==="ok"?"#2E7D32":syncSt==="error"?"#C62828":"#F57F17"}}>{syncMsg}</div>}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             <button onClick={doLoad} disabled={syncSt==="loading"} style={{...cancelBtn,color:"#007AFF"}}>📥 読み込む</button>
             <button onClick={doSave} disabled={syncSt==="loading"} style={primaryBtn}>📤 保存する</button>
@@ -839,59 +804,73 @@ export default function App(){
   );
 }
 
-// ── 共通コンポーネント ──────────────────────────────────────────────
-
+// ─── 共通コンポーネント ───────────────────────────────────────────
 function Sheet({children,onClose,title,sub,noPad}){
   return(
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:200}}>
-      <div style={{background:noPad?"#F2F2F7":"white",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:560,maxHeight:"90vh",overflow:"hidden",display:"flex",flexDirection:"column",boxShadow:"0 -4px 30px rgba(0,0,0,0.15)"}}>
-        {/* ハンドル */}
+      <div style={{background:noPad?"#F2F2F7":"white",borderRadius:"20px 20px 0 0",width:"100%",maxWidth:560,maxHeight:"90vh",overflow:"hidden",display:"flex",flexDirection:"column",boxShadow:"0 -4px 30px rgba(0,0,0,0.15)"}}>
         <div style={{display:"flex",justifyContent:"center",padding:"10px 0 4px"}}>
           <div style={{width:36,height:4,borderRadius:2,background:"#E5E5EA"}}/>
         </div>
-        {/* タイトル */}
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"4px 20px 12px",borderBottom:"1px solid #F2F2F7"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"2px 18px 12px",borderBottom:"1px solid #F2F2F7"}}>
           <div>
-            <div style={{fontSize:17,fontWeight:700,color:"#1C1C1E"}}>{title}</div>
-            {sub&&<div style={{fontSize:12,color:"#8E8E93",marginTop:2}}>{sub}</div>}
+            <div style={{fontSize:16,fontWeight:700,color:"#1C1C1E"}}>{title}</div>
+            {sub&&<div style={{fontSize:11,color:"#8E8E93",marginTop:2}}>{sub}</div>}
           </div>
-          <button onClick={onClose} style={{background:"#F2F2F7",border:"none",borderRadius:"50%",width:32,height:32,cursor:"pointer",fontSize:16,color:"#8E8E93",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+          <button onClick={onClose} style={{background:"#F2F2F7",border:"none",borderRadius:"50%",width:30,height:30,cursor:"pointer",fontSize:15,color:"#8E8E93",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
         </div>
         {noPad
           ?<div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>{children}</div>
-          :<div style={{overflowY:"auto",flex:1,padding:"16px 20px 32px"}}>{children}</div>
+          :<div style={{overflowY:"auto",flex:1,padding:"14px 18px 32px"}}>{children}</div>
         }
       </div>
     </div>
   );
 }
 
+function ShiftRow({sv,label,val,staff,filterLabel,onChange}){
+  return(
+    <div style={{marginBottom:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+        <div style={{width:30,height:30,borderRadius:8,background:sv.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>{sv.icon}</div>
+        <span style={{fontSize:14,fontWeight:600,color:"#1C1C1E"}}>{label}</span>
+      </div>
+      <select value={val} onChange={e=>onChange(e.target.value)}
+        style={{width:"100%",padding:"11px 12px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:14,color:"#1C1C1E",outline:"none",appearance:"none",WebkitAppearance:"none",boxSizing:"border-box"}}>
+        <option value="">— 未割り当て —</option>
+        <optgroup label="── A班 ──">
+          {staff.filter(s=>s[filterLabel]==="A").map(s=><option key={s.id} value={s.id}>{s.name}（A班）</option>)}
+        </optgroup>
+        <optgroup label="── B班 ──">
+          {staff.filter(s=>s[filterLabel]==="B").map(s=><option key={s.id} value={s.id}>{s.name}（B班）</option>)}
+        </optgroup>
+      </select>
+    </div>
+  );
+}
+
 function MasterSec({title,color,draft,shifts,staff,onAdd,onRem,onMov}){
-  const [aShift,setAShift]=useState(shifts[0]);
+  const [aShift,setAShift]=useState(shifts[0].key);
   const [aStaff,setAStaff]=useState("");
   return(
     <div style={{background:"white",borderRadius:14,padding:14,border:"1px solid #E5E5EA"}}>
-      <div style={{fontSize:14,fontWeight:700,color,marginBottom:12}}>{title}</div>
-      {shifts.map(sk=>{
-        const sv=SHIFT_DEFS[sk];
-        const rows=draft.map((r,i)=>({...r,idx:i})).filter(r=>r.shift===sk);
+      <div style={{fontSize:13,fontWeight:700,color,marginBottom:12}}>{title}</div>
+      {shifts.map(({key,label,icon})=>{
+        const rows=draft.map((r,i)=>({...r,idx:i})).filter(r=>r.shift===key);
         return(
-          <div key={sk} style={{marginBottom:14}}>
-            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
-              <div style={{width:26,height:26,borderRadius:7,background:sv.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>{sv.icon}</div>
-              <span style={{fontSize:13,color:"#8E8E93",fontWeight:600}}>{sv.label} の順番</span>
-            </div>
-            {rows.length===0&&<div style={{fontSize:13,color:"#C7C7CC",padding:"4px 8px"}}>未設定</div>}
+          <div key={key} style={{marginBottom:12}}>
+            <div style={{fontSize:11,color:"#8E8E93",fontWeight:600,marginBottom:5}}>{icon} {label}</div>
+            {rows.length===0&&<div style={{fontSize:12,color:"#C7C7CC",padding:"3px 0"}}>未設定</div>}
             {rows.map((r,pos)=>{
               const mem=staff.find(x=>x.id===r.staffId);
               return(
-                <div key={r.idx} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,background:"#F9F9FB",borderRadius:10,padding:"9px 12px",border:"1px solid #F0F0F0"}}>
-                  <span style={{fontSize:12,color:"#C7C7CC",minWidth:18}}>{pos+1}.</span>
-                  <span style={{width:9,height:9,borderRadius:"50%",background:mem?.color||"#C7C7CC",flexShrink:0}}/>
-                  <span style={{flex:1,fontSize:14,color:mem?"#1C1C1E":"#FF3B30",fontWeight:500}}>{mem?mem.name:"（削除済み）"}</span>
-                  <button onClick={()=>onMov(r.idx,-1)} disabled={pos===0} style={{background:"white",border:"1px solid #E5E5EA",borderRadius:7,padding:"3px 9px",cursor:pos===0?"not-allowed":"pointer",color:pos===0?"#E5E5EA":"#8E8E93",fontSize:13}}>▲</button>
-                  <button onClick={()=>onMov(r.idx,1)} disabled={pos===rows.length-1} style={{background:"white",border:"1px solid #E5E5EA",borderRadius:7,padding:"3px 9px",cursor:pos===rows.length-1?"not-allowed":"pointer",color:pos===rows.length-1?"#E5E5EA":"#8E8E93",fontSize:13}}>▼</button>
-                  <button onClick={()=>onRem(r.idx)} style={{background:"#FFEBEE",color:"#FF3B30",border:"none",borderRadius:7,padding:"3px 9px",cursor:"pointer",fontSize:13,fontWeight:600}}>✕</button>
+                <div key={r.idx} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,background:"#F9F9FB",borderRadius:9,padding:"7px 10px"}}>
+                  <span style={{fontSize:11,color:"#C7C7CC",minWidth:16}}>{pos+1}.</span>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:mem?.color||"#C7C7CC",flexShrink:0}}/>
+                  <span style={{flex:1,fontSize:13,color:mem?"#1C1C1E":"#FF3B30"}}>{mem?mem.name:"（削除済み）"}</span>
+                  <button onClick={()=>onMov(r.idx,-1)} disabled={pos===0} style={movBtn(pos===0)}>▲</button>
+                  <button onClick={()=>onMov(r.idx,1)} disabled={pos===rows.length-1} style={movBtn(pos===rows.length-1)}>▼</button>
+                  <button onClick={()=>onRem(r.idx)} style={{background:"#FFEBEE",color:"#FF3B30",border:"none",borderRadius:6,padding:"3px 8px",cursor:"pointer",fontSize:11,fontWeight:600}}>✕</button>
                 </div>
               );
             })}
@@ -899,28 +878,25 @@ function MasterSec({title,color,draft,shifts,staff,onAdd,onRem,onMov}){
         );
       })}
       <div style={{borderTop:"1px solid #F2F2F7",paddingTop:10,display:"flex",gap:6,flexWrap:"wrap"}}>
-        <select value={aShift} onChange={e=>setAShift(e.target.value)}
-          style={{padding:"9px 10px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:13,color:"#1C1C1E",outline:"none"}}>
-          {shifts.map(sk=><option key={sk} value={sk}>{SHIFT_DEFS[sk].icon} {SHIFT_DEFS[sk].label}</option>)}
+        <select value={aShift} onChange={e=>setAShift(e.target.value)} style={{padding:"7px 9px",background:"#F2F2F7",border:"none",borderRadius:8,fontSize:12,color:"#1C1C1E",outline:"none"}}>
+          {shifts.map(({key,label})=><option key={key} value={key}>{label}</option>)}
         </select>
-        <select value={aStaff} onChange={e=>setAStaff(e.target.value)}
-          style={{flex:1,padding:"9px 10px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:13,color:"#1C1C1E",outline:"none"}}>
+        <select value={aStaff} onChange={e=>setAStaff(e.target.value)} style={{flex:1,padding:"7px 9px",background:"#F2F2F7",border:"none",borderRadius:8,fontSize:12,color:"#1C1C1E",outline:"none"}}>
           <option value="">担当者を選択</option>
-          {staff.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+          {staff.map(s=><option key={s.id} value={s.id}>{s.name}（{s["shift班"]}班/拘束{s["拘束分類"]}）</option>)}
         </select>
         <button onClick={()=>{onAdd(aShift,aStaff);setAStaff("");}} disabled={!aStaff}
-          style={{padding:"9px 14px",background:aStaff?"#007AFF":"#C7C7CC",color:"white",border:"none",borderRadius:10,cursor:aStaff?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>＋</button>
+          style={{padding:"7px 12px",background:aStaff?"#007AFF":"#C7C7CC",color:"white",border:"none",borderRadius:8,cursor:aStaff?"pointer":"not-allowed",fontSize:12,fontWeight:700}}>＋</button>
       </div>
     </div>
   );
 }
 
-function Tag({label,bg,color}){
-  return <span style={{fontSize:12,background:bg,color,borderRadius:7,padding:"2px 8px",fontWeight:600}}>{label}</span>;
-}
-function Btn({label,color,onClick}){
-  return <button onClick={onClick} style={{background:"#F2F2F7",border:"none",borderRadius:10,padding:"8px 14px",cursor:"pointer",fontSize:14,color,fontWeight:600}}>{label}</button>;
-}
+function Tag({label,bg,color}){ return <span style={{fontSize:11,background:bg,color,borderRadius:6,padding:"2px 7px",fontWeight:600}}>{label}</span>; }
+function HBtn({label,color,onClick}){ return <button onClick={onClick} style={{background:"#F2F2F7",border:"none",borderRadius:10,padding:"7px 12px",cursor:"pointer",fontSize:13,color,fontWeight:600}}>{label}</button>; }
 
-const primaryBtn={flex:2,padding:"14px 0",background:"#007AFF",color:"white",border:"none",borderRadius:14,cursor:"pointer",fontSize:16,fontWeight:700};
-const cancelBtn={flex:1,padding:"14px 0",background:"#F2F2F7",color:"#1C1C1E",border:"none",borderRadius:14,cursor:"pointer",fontSize:16,fontWeight:500};
+const primaryBtn={flex:2,padding:"13px 0",background:"#007AFF",color:"white",border:"none",borderRadius:14,cursor:"pointer",fontSize:15,fontWeight:700};
+const cancelBtn={flex:1,padding:"13px 0",background:"#F2F2F7",color:"#1C1C1E",border:"none",borderRadius:14,cursor:"pointer",fontSize:15,fontWeight:500};
+const arrowBtn={background:"none",border:"none",fontSize:24,color:"#007AFF",cursor:"pointer",padding:"0 8px",lineHeight:1};
+const navSmBtn={background:"white",border:"1px solid #E5E5EA",borderRadius:9,padding:"6px 14px",color:"#007AFF",fontSize:15,cursor:"pointer",fontWeight:600};
+function movBtn(disabled){ return {background:"white",border:"1px solid #E5E5EA",borderRadius:6,padding:"2px 7px",cursor:disabled?"not-allowed":"pointer",color:disabled?"#E5E5EA":"#8E8E93",fontSize:11}; }
