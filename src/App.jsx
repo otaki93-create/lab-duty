@@ -69,78 +69,70 @@ function firstDow(y,m)   { return new Date(y,m,1).getDay(); }
 function toStr(y,m,d)    { return `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`; }
 
 // スケジュール生成
-function genSched(y,m,wdO,weO,staffList){
+// 拘束の割り当ては手動。マスターは準夜勤・日直・拘束A/Bの順番のみ管理。
+// 平日・土日祝それぞれ独立して適用できる。
+function genSchedWD(y,m,wdO,staffList){
+  // 平日のみ再生成
   const n=daysInMonth(y,m); const sched={};
   function q(o,k){ return o.filter(r=>r.shift===k).map(r=>r.staffId); }
-  function byBan(ban){ return (staffList||[]).filter(s=>s["shift班"]===ban).map(s=>s.id); }
-  function by拘束(type){ return (staffList||[]).filter(s=>s["拘束分類"]===type).map(s=>s.id); }
-
-  // 準夜勤キュー（A班・B班それぞれ）
-  const WD_J_A = q(wdO,"junya_A").length ? q(wdO,"junya_A") : byBan("A");
-  const WD_J_B = q(wdO,"junya_B").length ? q(wdO,"junya_B") : byBan("B");
-  const WE_N_A = q(weO,"nisoku_A").length ? q(weO,"nisoku_A") : byBan("A");
-  const WE_N_B = q(weO,"nisoku_B").length ? q(weO,"nisoku_B") : byBan("B");
-  const WE_J_A = q(weO,"junya_A").length  ? q(weO,"junya_A")  : byBan("A");
-  const WE_J_B = q(weO,"junya_B").length  ? q(weO,"junya_B")  : byBan("B");
-  // 拘束キュー（拘束A担当・拘束B担当それぞれ）
-  const WD_OCA = q(wdO,"oncallA").length ? q(wdO,"oncallA") : by拘束("A");
-  const WD_OCB = q(wdO,"oncallB").length ? q(wdO,"oncallB") : by拘束("B");
-  const WE_OCA = q(weO,"oncallA").length ? q(weO,"oncallA") : by拘束("A");
-  const WE_OCB = q(weO,"oncallB").length ? q(weO,"oncallB") : by拘束("B");
-
-  // カーソル（全て独立）
-  let c={wd_jA:0,wd_jB:0,we_nA:0,we_nB:0,we_jA:0,we_jB:0,wd_ocA:0,wd_ocB:0,we_ocA:0,we_ocB:0};
-  // 平日・土日祝それぞれの「今日はA班番・B班番」フラグ
-  let wd_ban_turn="A"; // 平日準夜勤の班ターン
-  let we_ban_turn="A"; // 土日祝日直・準夜勤の班ターン
-
+  function byAll(){ return (staffList||[]).map(s=>s.id); }
+  function by拘束(t){ return (staffList||[]).filter(s=>s["拘束分類"]===t).map(s=>s.id); }
+  const J  = q(wdO,"junya").length  ? q(wdO,"junya")  : byAll();
+  const OCA= q(wdO,"oncallA").length? q(wdO,"oncallA"): by拘束("A");
+  const OCB= q(wdO,"oncallB").length? q(wdO,"oncallB"): by拘束("B");
+  let cj=0,coa=0,cob=0,oTurn=0; // oTurn: 0=拘束A 1=拘束B
   for(let d=1;d<=n;d++){
     const ds=toStr(y,m,d);
+    if(isHol(ds)) continue; // 平日のみ
     const e={};
-    if(isHol(ds)){
-      // 土日祝: 日直 + 準夜勤 + 拘束（1枠）
-      const ban=we_ban_turn;
-      const nisokuQ = ban==="A" ? WE_N_A : WE_N_B;
-      const junyaQ  = ban==="A" ? WE_J_A : WE_J_B;
-      const oncallKey = getOncallShiftKey(ban); // A班なら oncallB、B班なら oncallA
-      const oncallQ   = oncallKey==="oncallA" ? WE_OCA : WE_OCB;
-      const ocCurKey  = oncallKey==="oncallA" ? "we_ocA" : "we_ocB";
-      const niCurKey  = ban==="A" ? "we_nA" : "we_nB";
-      const jCurKey   = ban==="A" ? "we_jA" : "we_jB";
-      if(nisokuQ.length){ e.nisoku=nisokuQ[c[niCurKey]%nisokuQ.length]; c[niCurKey]++; }
-      if(junyaQ.length) { e.junya =junyaQ[c[jCurKey]%junyaQ.length];   c[jCurKey]++;  }
-      if(oncallQ.length){ e[oncallKey]=oncallQ[c[ocCurKey]%oncallQ.length]; c[ocCurKey]++; }
-      we_ban_turn = ban==="A" ? "B" : "A";
-    } else {
-      // 平日: 準夜勤 + 拘束（1枠）
-      const ban=wd_ban_turn;
-      const junyaQ  = ban==="A" ? WD_J_A : WD_J_B;
-      const oncallKey = getOncallShiftKey(ban);
-      const oncallQ   = oncallKey==="oncallA" ? WD_OCA : WD_OCB;
-      const ocCurKey  = oncallKey==="oncallA" ? "wd_ocA" : "wd_ocB";
-      const jCurKey   = ban==="A" ? "wd_jA" : "wd_jB";
-      if(junyaQ.length) { e.junya =junyaQ[c[jCurKey]%junyaQ.length];       c[jCurKey]++;  }
-      if(oncallQ.length){ e[oncallKey]=oncallQ[c[ocCurKey]%oncallQ.length]; c[ocCurKey]++; }
-      wd_ban_turn = ban==="A" ? "B" : "A";
-    }
+    if(J.length)  { e.junya=J[cj%J.length]; cj++; }
+    // 拘束は交互（A→B→A...）手動変更可能
+    if(oTurn===0){ if(OCA.length){ e.oncallA=OCA[coa%OCA.length]; coa++; } }
+    else         { if(OCB.length){ e.oncallB=OCB[cob%OCB.length]; cob++; } }
+    oTurn=oTurn===0?1:0;
     sched[ds]=e;
   }
   return sched;
 }
 
+function genSchedWE(y,m,weO,staffList){
+  // 土日祝のみ再生成
+  const n=daysInMonth(y,m); const sched={};
+  function q(o,k){ return o.filter(r=>r.shift===k).map(r=>r.staffId); }
+  function byAll(){ return (staffList||[]).map(s=>s.id); }
+  function by拘束(t){ return (staffList||[]).filter(s=>s["拘束分類"]===t).map(s=>s.id); }
+  const N  = q(weO,"nisoku").length ? q(weO,"nisoku") : byAll();
+  const J  = q(weO,"junya").length  ? q(weO,"junya")  : byAll();
+  const OCA= q(weO,"oncallA").length? q(weO,"oncallA"): by拘束("A");
+  const OCB= q(weO,"oncallB").length? q(weO,"oncallB"): by拘束("B");
+  let cn=0,cj=0,coa=0,cob=0,oTurn=0;
+  for(let d=1;d<=n;d++){
+    const ds=toStr(y,m,d);
+    if(!isHol(ds)) continue; // 土日祝のみ
+    const e={};
+    if(N.length)  { e.nisoku=N[cn%N.length]; cn++; }
+    if(J.length)  { e.junya=J[cj%J.length];  cj++; }
+    if(oTurn===0){ if(OCA.length){ e.oncallA=OCA[coa%OCA.length]; coa++; } }
+    else         { if(OCB.length){ e.oncallB=OCB[cob%OCB.length]; cob++; } }
+    oTurn=oTurn===0?1:0;
+    sched[ds]=e;
+  }
+  return sched;
+}
+
+function genSched(y,m,wdO,weO,staffList){
+  return {...genSchedWD(y,m,wdO,staffList), ...genSchedWE(y,m,weO,staffList)};
+}
+
 function buildMaster(staff){
   const wd=[],we=[];
-  // 準夜勤: A班・B班それぞれの順番
-  staff.filter(s=>s["shift班"]==="A").forEach(s=>wd.push({shift:"junya_A",staffId:s.id}));
-  staff.filter(s=>s["shift班"]==="B").forEach(s=>wd.push({shift:"junya_B",staffId:s.id}));
-  // 拘束: 拘束A担当・拘束B担当それぞれの順番
+  // 平日: 準夜勤（全員） + 拘束A担当 + 拘束B担当
+  staff.forEach(s=>wd.push({shift:"junya",staffId:s.id}));
   staff.filter(s=>s["拘束分類"]==="A").forEach(s=>wd.push({shift:"oncallA",staffId:s.id}));
   staff.filter(s=>s["拘束分類"]==="B").forEach(s=>wd.push({shift:"oncallB",staffId:s.id}));
-  // 土日祝
-  staff.filter(s=>s["shift班"]==="A").forEach(s=>we.push({shift:"nisoku_A",staffId:s.id}));
-  staff.filter(s=>s["shift班"]==="B").forEach(s=>we.push({shift:"nisoku_B",staffId:s.id}));
-  staff.filter(s=>s["shift班"]==="A").forEach(s=>we.push({shift:"junya_A",staffId:s.id}));
-  staff.filter(s=>s["shift班"]==="B").forEach(s=>we.push({shift:"junya_B",staffId:s.id}));
+  // 土日祝: 日直（全員） + 準夜勤（全員） + 拘束A担当 + 拘束B担当
+  staff.forEach(s=>we.push({shift:"nisoku",staffId:s.id}));
+  staff.forEach(s=>we.push({shift:"junya",staffId:s.id}));
   staff.filter(s=>s["拘束分類"]==="A").forEach(s=>we.push({shift:"oncallA",staffId:s.id}));
   staff.filter(s=>s["拘束分類"]==="B").forEach(s=>we.push({shift:"oncallB",staffId:s.id}));
   return {wd,we};
@@ -259,6 +251,18 @@ export default function App(){
   function addMR(type,sk,sid){if(!sid)return;(type==="wd"?setDWD:setDWE)(p=>[...p,{shift:sk,staffId:Number(sid)}]);}
   function remMR(type,i){(type==="wd"?setDWD:setDWE)(p=>p.filter((_,j)=>j!==i));}
   function movMR(type,i,d){(type==="wd"?setDWD:setDWE)(p=>{const a=[...p],n=i+d;if(n<0||n>=a.length)return a;[a[i],a[n]]=[a[n],a[i]];return a;});}
+  function saveMasterWD(){
+    const ns={...sched,...genSchedWD(yr,mo,dWD,staff)};
+    setWdO(dWD);setSched(ns);
+    note("平日シフトのマスターを適用しました");
+    if(gasUrl&&autoSync) autoSave({wdO:dWD,sched:ns});
+  }
+  function saveMasterWE(){
+    const ns={...sched,...genSchedWE(yr,mo,dWE,staff)};
+    setWeO(dWE);setSched(ns);
+    note("土日祝シフトのマスターを適用しました");
+    if(gasUrl&&autoSync) autoSave({weO:dWE,sched:ns});
+  }
   function saveMaster(){
     const ns={...sched,...genSched(yr,mo,dWD,dWE,staff)};
     setWdO(dWD);setWeO(dWE);setSched(ns);
@@ -336,13 +340,7 @@ export default function App(){
 
   const syncColor=syncSt==="ok"?"#34C759":syncSt==="error"?"#FF3B30":syncSt==="loading"?"#FF9500":"#8E8E93";
 
-  // 編集モーダル用：その日の準夜勤担当者の班を判定
-  const junyaMember=staff.find(x=>x.id===editData.junya);
-  const nisokuMember=staff.find(x=>x.id===editData.nisoku);
-  const 主担当班 = selIsWE
-    ? (nisokuMember?.["shift班"] || junyaMember?.["shift班"] || null)
-    : (junyaMember?.["shift班"] || null);
-  const 自動拘束種別 = 主担当班 ? getOncallShiftKey(主担当班) : null; // oncallA or oncallB
+  // 拘束は手動選択のため自動判定なし
 
   return(
     <div style={{fontFamily:"-apple-system,'Helvetica Neue',sans-serif",minHeight:"100vh",background:"#F2F2F7",WebkitTextSizeAdjust:"100%",overflowX:"hidden"}}>
@@ -596,53 +594,40 @@ export default function App(){
               const id=Number(v)||null;
               setEditData(p=>({...p,junya:id}));
             }}/>
-          {/* 拘束（自動判定）*/}
-          <div style={{marginBottom:16}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-              <div style={{width:32,height:32,borderRadius:9,background:"#F2F2F7",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17}}>📗</div>
-              <div>
-                <span style={{fontSize:15,fontWeight:600,color:"#1C1C1E"}}>拘束</span>
-                {自動拘束種別&&(
-                  <span style={{marginLeft:8,fontSize:12,fontWeight:700,
-                    color:自動拘束種別==="oncallB"?"#AF52DE":"#34C759",
-                    background:自動拘束種別==="oncallB"?"#F5EEFF":"#EDFBF0",
-                    borderRadius:6,padding:"1px 7px"}}>
-                    {自動拘束種別==="oncallB"?"→ 拘束B（A班担当）":"→ 拘束A（B班担当）"}
-                  </span>
-                )}
-              </div>
+          {/* 拘束A（手動選択） */}
+          <div style={{marginBottom:14}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+              <div style={{width:30,height:30,borderRadius:8,background:"#EDFBF0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>📗</div>
+              <span style={{fontSize:14,fontWeight:600,color:"#1C1C1E"}}>拘束A</span>
             </div>
-            <div style={{fontSize:11,color:"#8E8E93",marginBottom:8,background:"#F9F9FB",padding:"8px 10px",borderRadius:8,lineHeight:1.7}}>
-              準夜勤{selIsWE?"・日直":""}がA班 → 拘束Bと組む（拘束B担当者が入る）<br/>
-              準夜勤{selIsWE?"・日直":""}がB班 → 拘束Aと組む（拘束A担当者が入る）
-            </div>
-            <select
-              value={(自動拘束種別==="oncallB"?editData.oncallB:editData.oncallA)||""}
-              onChange={e=>{
-                const id=Number(e.target.value)||null;
-                if(自動拘束種別==="oncallB"){
-                  setEditData(p=>({...p,oncallB:id,oncallA:null}));
-                } else {
-                  setEditData(p=>({...p,oncallA:id,oncallB:null}));
-                }
-              }}
-              style={{width:"100%",padding:"13px 14px",background:"#F2F2F7",border:"none",borderRadius:12,fontSize:15,color:"#1C1C1E",outline:"none",appearance:"none",WebkitAppearance:"none",boxSizing:"border-box"}}>
+            <select value={editData.oncallA||""}
+              onChange={e=>setEditData(p=>({...p,oncallA:Number(e.target.value)||null}))}
+              style={{width:"100%",padding:"11px 12px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:14,color:"#1C1C1E",outline:"none",appearance:"none",WebkitAppearance:"none",boxSizing:"border-box"}}>
               <option value="">— 未割り当て —</option>
-              {自動拘束種別&&(
-                <>
-                  <optgroup label={自動拘束種別==="oncallB"?"── 拘束B担当者 ──":"── 拘束A担当者 ──"}>
-                    {staff.filter(s=>s["拘束分類"]===(自動拘束種別==="oncallB"?"B":"A")).map(s=>(
-                      <option key={s.id} value={s.id}>{s.name}（拘束{s["拘束分類"]}）</option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="── その他 ──">
-                    {staff.filter(s=>s["拘束分類"]!==(自動拘束種別==="oncallB"?"B":"A")).map(s=>(
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </optgroup>
-                </>
-              )}
-              {!自動拘束種別&&staff.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              <optgroup label="── 拘束A担当 ──">
+                {staff.filter(s=>s["拘束分類"]==="A").map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </optgroup>
+              <optgroup label="── その他 ──">
+                {staff.filter(s=>s["拘束分類"]!=="A").map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </optgroup>
+            </select>
+          </div>
+          {/* 拘束B（手動選択） */}
+          <div style={{marginBottom:14}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+              <div style={{width:30,height:30,borderRadius:8,background:"#F5EEFF",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>📘</div>
+              <span style={{fontSize:14,fontWeight:600,color:"#1C1C1E"}}>拘束B</span>
+            </div>
+            <select value={editData.oncallB||""}
+              onChange={e=>setEditData(p=>({...p,oncallB:Number(e.target.value)||null}))}
+              style={{width:"100%",padding:"11px 12px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:14,color:"#1C1C1E",outline:"none",appearance:"none",WebkitAppearance:"none",boxSizing:"border-box"}}>
+              <option value="">— 未割り当て —</option>
+              <optgroup label="── 拘束B担当 ──">
+                {staff.filter(s=>s["拘束分類"]==="B").map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </optgroup>
+              <optgroup label="── その他 ──">
+                {staff.filter(s=>s["拘束分類"]!=="B").map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </optgroup>
             </select>
           </div>
           <div style={{display:"flex",gap:10,marginTop:6}}>
@@ -744,28 +729,37 @@ export default function App(){
               <div style={{background:"#FFF8E1",borderRadius:10,padding:"10px 12px",marginBottom:12,fontSize:12,color:"#795548",lineHeight:1.7,border:"1px solid #FFF176"}}>
                 💡 各シフトの担当順を設定。「今月に適用」で再生成されます。
               </div>
+              {/* 平日シフト */}
               <MasterSec title="📅 平日シフト" color="#34C759" draft={dWD}
                 shifts={[
-                  {key:"junya_A",label:"準夜勤（A班順番）",icon:"🌙"},
-                  {key:"junya_B",label:"準夜勤（B班順番）",icon:"🌙"},
+                  {key:"junya",  label:"準夜勤",    icon:"🌙"},
                   {key:"oncallA",label:"拘束A担当順番",icon:"📗"},
                   {key:"oncallB",label:"拘束B担当順番",icon:"📘"},
                 ]}
                 staff={staff} onAdd={(sk,sid)=>addMR("wd",sk,sid)} onRem={i=>remMR("wd",i)} onMov={(i,d)=>movMR("wd",i,d)}/>
-              <div style={{height:10}}/>
+              <div style={{display:"flex",gap:8,marginTop:10,marginBottom:16}}>
+                <button onClick={closeMaster} style={{...cancelBtn,flex:1,padding:"11px 0",fontSize:13}}>キャンセル</button>
+                <button onClick={saveMasterWD} style={{flex:2,padding:"11px 0",background:"#34C759",color:"white",border:"none",borderRadius:12,cursor:"pointer",fontSize:13,fontWeight:700}}>
+                  ✅ 平日シフトを今月に適用
+                </button>
+              </div>
+
+              <div style={{height:4,background:"#E5E5EA",borderRadius:2,marginBottom:16}}/>
+
+              {/* 土日祝シフト */}
               <MasterSec title="🏖️ 土日祝シフト" color="#FF9500" draft={dWE}
                 shifts={[
-                  {key:"nisoku_A",label:"日直（A班順番）",icon:"☀️"},
-                  {key:"nisoku_B",label:"日直（B班順番）",icon:"☀️"},
-                  {key:"junya_A",label:"準夜勤（A班順番）",icon:"🌙"},
-                  {key:"junya_B",label:"準夜勤（B班順番）",icon:"🌙"},
+                  {key:"nisoku", label:"日直",        icon:"☀️"},
+                  {key:"junya",  label:"準夜勤",      icon:"🌙"},
                   {key:"oncallA",label:"拘束A担当順番",icon:"📗"},
                   {key:"oncallB",label:"拘束B担当順番",icon:"📘"},
                 ]}
                 staff={staff} onAdd={(sk,sid)=>addMR("we",sk,sid)} onRem={i=>remMR("we",i)} onMov={(i,d)=>movMR("we",i,d)}/>
-              <div style={{display:"flex",gap:10,marginTop:14}}>
-                <button onClick={closeMaster} style={cancelBtn}>キャンセル</button>
-                <button onClick={saveMaster} style={{...primaryBtn,flex:2}}>✅ 今月に適用</button>
+              <div style={{display:"flex",gap:8,marginTop:10,marginBottom:8}}>
+                <button onClick={closeMaster} style={{...cancelBtn,flex:1,padding:"11px 0",fontSize:13}}>キャンセル</button>
+                <button onClick={saveMasterWE} style={{flex:2,padding:"11px 0",background:"#FF9500",color:"white",border:"none",borderRadius:12,cursor:"pointer",fontSize:13,fontWeight:700}}>
+                  ✅ 土日祝シフトを今月に適用
+                </button>
               </div>
             </>)}
           </div>
