@@ -1,12 +1,22 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-// ─── localStorage ─────────────────────────────────────────────────
+// ─── localStorage（オフライン用キャッシュ） ───────────────────────
 const LS_KEY = "labDutyData_v2";
-const LS_URL  = "labDutyGasUrl";
+const LS_SB  = "labDutySupabase"; // Supabase接続情報
 function lsSave(d){ try{ localStorage.setItem(LS_KEY,JSON.stringify(d)); }catch(e){} }
 function lsLoad(){ try{ const r=localStorage.getItem(LS_KEY); return r?JSON.parse(r):null; }catch(e){ return null; } }
-function lsSaveUrl(u){ try{ localStorage.setItem(LS_URL,u); }catch(e){} }
-function lsLoadUrl(){ try{ return localStorage.getItem(LS_URL)||""; }catch(e){ return ""; } }
+function lsSaveSB(d){ try{ localStorage.setItem(LS_SB,JSON.stringify(d)); }catch(e){} }
+function lsLoadSB(){ try{ const r=localStorage.getItem(LS_SB); return r?JSON.parse(r):null; }catch(e){ return null; } }
+
+// ─── Supabaseクライアント（動的生成） ────────────────────────────
+let supabaseClient = null;
+function getSupabase(url, key){
+  if(!url||!key) return null;
+  if(!supabaseClient) supabaseClient = createClient(url, key);
+  return supabaseClient;
+}
+function resetSupabase(){ supabaseClient = null; }
 
 // ─── 祝日 ─────────────────────────────────────────────────────────
 const HOLIDAYS = new Set([
@@ -180,18 +190,29 @@ export default function App(){
   const [delConf,setDelConf]=useState(null);
   const [dWD,    setDWD   ]=useState(null);
   const [dWE,    setDWE   ]=useState(null);
-  const [gasUrl, setGasUrl]=useState(()=>lsLoadUrl());
-  const [syncSt, setSyncSt]=useState("idle");
+  // Supabase設定
+  const savedSB = lsLoadSB();
+  const [sbUrl,  setSbUrl  ]=useState(savedSB?.url||"");
+  const [sbKey,  setSbKey  ]=useState(savedSB?.key||"");
+  const [syncSt, setSyncSt ]=useState("idle"); // idle|loading|ok|error|realtime
   const [syncMsg,setSyncMsg]=useState("");
-  const [autoSync,setAutoSync]=useState(()=>!!lsLoadUrl());
+  const [realtimeOn,setRealtimeOn]=useState(false);
   const [clearConf,setClearConf]=useState(false);
-  const syncingRef=useRef(false);
+  const subRef=useRef(null); // Supabaseリアルタイム購読
+  const savingRef=useRef(false); // 自分の保存中フラグ（ループ防止）
 
   function note(msg){setNotifs(p=>[{id:Date.now(),msg,time:new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})},...p].slice(0,20));}
 
+  // localStorage自動保存
   useEffect(()=>{ lsSave({staff,sched,wdO,weO}); },[staff,sched,wdO,weO]);
-  useEffect(()=>{ lsSaveUrl(gasUrl); },[gasUrl]);
-  useEffect(()=>{ if(gasUrl&&autoSync) autoLoad(); },[]);
+  // Supabase設定保存
+  useEffect(()=>{ lsSaveSB({url:sbUrl,key:sbKey}); },[sbUrl,sbKey]);
+
+  // Supabase接続済みなら起動時に読み込み＆リアルタイム購読開始
+  useEffect(()=>{
+    if(sbUrl&&sbKey) connectSupabase(sbUrl,sbKey);
+    return ()=>{ if(subRef.current) subRef.current.unsubscribe(); };
+  },[]);
 
   function chMo(d){
     let nm=mo+d,ny=yr;
@@ -357,9 +378,28 @@ export default function App(){
           </div>
           <div style={{display:"flex",gap:6}}>
             <HBtn label={syncSt==="loading"?"⏳":"☁️"} color={syncColor} onClick={()=>setSyncOpen(true)}/>
+            <HBtn label="📂" color="#FF9500" onClick={()=>document.getElementById('importFile').click()}/>
             <HBtn label="🗑️" color="#FF3B30" onClick={()=>setClearConf(true)}/>
             <HBtn label="設定" color="#007AFF" onClick={()=>{setSettOpen(true);setSettTab("member");startAdd();}}/>
           </div>
+          {/* 隠しファイル入力 */}
+          <input id="importFile" type="file" accept=".json" style={{display:"none"}}
+            onChange={e=>{
+              const file=e.target.files[0]; if(!file) return;
+              const reader=new FileReader();
+              reader.onload=ev=>{
+                try{
+                  const data=JSON.parse(ev.target.result);
+                  if(data.staff) setStaff(data.staff);
+                  if(data.sched) setSched(prev=>({...prev,...data.sched}));
+                  if(data.wdO&&data.wdO.length) setWdO(data.wdO);
+                  if(data.weO&&data.weO.length) setWeO(data.weO);
+                  note(`📂 インポート完了：${data.staff?.length||0}名・${Object.keys(data.sched||{}).length}日分のデータを読み込みました`);
+                }catch(err){ note("❌ インポート失敗：JSONファイルの形式が正しくありません"); }
+              };
+              reader.readAsText(file);
+              e.target.value=""; // リセット
+            }}/>
         </div>
         <div style={{display:"flex"}}>
           {[["cal","📅 カレンダー"],["list","📋 一覧"],["stats","📊 集計"],["notif","🔔 通知"]].map(([k,l])=>(
