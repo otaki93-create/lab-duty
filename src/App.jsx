@@ -1,22 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { useState, useEffect, useRef } from "react";
 
-// ─── localStorage（オフライン用キャッシュ） ───────────────────────
+// ─── localStorage ─────────────────────────────────────────────────
 const LS_KEY = "labDutyData_v2";
-const LS_SB  = "labDutySupabase"; // Supabase接続情報
+const LS_SB  = "labDutySupabase";
 function lsSave(d){ try{ localStorage.setItem(LS_KEY,JSON.stringify(d)); }catch(e){} }
 function lsLoad(){ try{ const r=localStorage.getItem(LS_KEY); return r?JSON.parse(r):null; }catch(e){ return null; } }
 function lsSaveSB(d){ try{ localStorage.setItem(LS_SB,JSON.stringify(d)); }catch(e){} }
 function lsLoadSB(){ try{ const r=localStorage.getItem(LS_SB); return r?JSON.parse(r):null; }catch(e){ return null; } }
-
-// ─── Supabaseクライアント（動的生成） ────────────────────────────
-let supabaseClient = null;
-function getSupabase(url, key){
-  if(!url||!key) return null;
-  if(!supabaseClient) supabaseClient = createClient(url, key);
-  return supabaseClient;
-}
-function resetSupabase(){ supabaseClient = null; }
 
 // ─── 祝日 ─────────────────────────────────────────────────────────
 const HOLIDAYS = new Set([
@@ -190,29 +180,18 @@ export default function App(){
   const [delConf,setDelConf]=useState(null);
   const [dWD,    setDWD   ]=useState(null);
   const [dWE,    setDWE   ]=useState(null);
-  // Supabase設定
-  const savedSB = lsLoadSB();
-  const [sbUrl,  setSbUrl  ]=useState(savedSB?.url||"");
-  const [sbKey,  setSbKey  ]=useState(savedSB?.key||"");
-  const [syncSt, setSyncSt ]=useState("idle"); // idle|loading|ok|error|realtime
+  const [syncSt, setSyncSt ]=useState("idle");
   const [syncMsg,setSyncMsg]=useState("");
-  const [realtimeOn,setRealtimeOn]=useState(false);
+  const [gasUrl, setGasUrl ]=useState(()=>{ try{ return lsLoadSB()?.gasUrl||""; }catch(e){ return ""; } });
+  const [autoSync,setAutoSync]=useState(()=>{ try{ return !!lsLoadSB()?.gasUrl; }catch(e){ return false; } });
   const [clearConf,setClearConf]=useState(false);
-  const subRef=useRef(null); // Supabaseリアルタイム購読
-  const savingRef=useRef(false); // 自分の保存中フラグ（ループ防止）
+  const syncingRef=useRef(false);
 
   function note(msg){setNotifs(p=>[{id:Date.now(),msg,time:new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})},...p].slice(0,20));}
 
-  // localStorage自動保存
   useEffect(()=>{ lsSave({staff,sched,wdO,weO}); },[staff,sched,wdO,weO]);
-  // Supabase設定保存
-  useEffect(()=>{ lsSaveSB({url:sbUrl,key:sbKey}); },[sbUrl,sbKey]);
-
-  // Supabase接続済みなら起動時に読み込み＆リアルタイム購読開始
-  useEffect(()=>{
-    if(sbUrl&&sbKey) connectSupabase(sbUrl,sbKey);
-    return ()=>{ if(subRef.current) subRef.current.unsubscribe(); };
-  },[]);
+  useEffect(()=>{ lsSaveSB({gasUrl}); },[gasUrl]);
+  useEffect(()=>{ if(gasUrl&&autoSync) autoLoad(); },[]);
 
   function chMo(d){
     let nm=mo+d,ny=yr;
