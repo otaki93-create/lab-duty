@@ -300,27 +300,34 @@ export default function App(){
 
   // ── Supabase: データ読み込み ──
   async function loadFromSB(){
-    const sb=getSB(); if(!sb) return;
-    setSyncSt("loading"); setSyncMsg("読み込み中...");
     try{
+      const sb=getSB(); if(!sb){ setSyncMsg("❌ 接続情報が不正です"); setSyncSt("error"); return; }
+      setSyncSt("loading"); setSyncMsg("読み込み中...");
       const {data,error}=await sb.from("duty_data").select("*").eq("id","main").single();
-      if(error) throw error;
-      if(data.staff)   setStaff(data.staff);
-      if(data.sched)   setSched(data.sched);
-      if(data.wd_order&&data.wd_order.length) setWdO(data.wd_order);
-      if(data.we_order&&data.we_order.length) setWeO(data.we_order);
-      lsSave({staff:data.staff||staff, sched:data.sched||sched, wdO:data.wd_order||wdO, weO:data.we_order||weO});
+      if(error){
+        // データがまだない場合はOK（初回）
+        if(error.code==="PGRST116"){ setSyncSt("ok"); setSyncMsg("✅ 接続OK（データはまだありません）"); return; }
+        throw error;
+      }
+      if(!data){ setSyncSt("ok"); setSyncMsg("✅ 接続OK（データなし）"); return; }
+      if(data.staff&&Array.isArray(data.staff)&&data.staff.length>0) setStaff(data.staff);
+      if(data.sched&&Object.keys(data.sched).length>0) setSched(data.sched);
+      if(data.wd_order&&Array.isArray(data.wd_order)&&data.wd_order.length>0) setWdO(data.wd_order);
+      if(data.we_order&&Array.isArray(data.we_order)&&data.we_order.length>0) setWeO(data.we_order);
       setSyncSt("ok"); setSyncMsg("✅ 読み込み完了");
       note("Supabaseから最新データを読み込みました");
-    }catch(e){ setSyncSt("error"); setSyncMsg(`❌ ${e.message}`); }
+    }catch(e){
+      console.error("loadFromSB error:",e);
+      setSyncSt("error"); setSyncMsg(`❌ ${e.message||"接続エラー"}`);
+    }
   }
 
   // ── Supabase: データ保存 ──
   async function saveToDB(ov={}){
-    const sb=getSB(); if(!sb) return;
-    if(savingRef.current) return;
-    savingRef.current=true; setSyncSt("loading");
     try{
+      const sb=getSB(); if(!sb) return;
+      if(savingRef.current) return;
+      savingRef.current=true; setSyncSt("loading");
       const payload={
         id:"main",
         staff:    ov.staff  ||staff,
@@ -331,32 +338,43 @@ export default function App(){
       };
       const {error}=await sb.from("duty_data").upsert(payload);
       if(error) throw error;
-      setSyncSt("live"); setSyncMsg("✅ 保存・同期中");
-    }catch(e){ setSyncSt("error"); setSyncMsg(`❌ ${e.message}`); }
-    finally{ savingRef.current=false; }
+      setSyncSt("live"); setSyncMsg("✅ 保存完了");
+    }catch(e){
+      console.error("saveToDB error:",e);
+      setSyncSt("error"); setSyncMsg(`❌ ${e.message||"保存エラー"}`);
+    } finally{ savingRef.current=false; }
   }
 
   // ── Supabase: リアルタイム購読 ──
   function startRealtime(){
-    const sb=getSB(); if(!sb) return;
-    if(subRef.current) subRef.current.unsubscribe();
-    subRef.current = sb.channel("duty_data_changes")
-      .on("postgres_changes",{event:"UPDATE",schema:"public",table:"duty_data"},
-        payload=>{
-          if(savingRef.current) return; // 自分の保存は無視
-          const d=payload.new;
-          if(d.staff)   setStaff(d.staff);
-          if(d.sched)   setSched(d.sched);
-          if(d.wd_order&&d.wd_order.length) setWdO(d.wd_order);
-          if(d.we_order&&d.we_order.length) setWeO(d.we_order);
-          note("🔄 他のメンバーがシフトを更新しました");
-          setSyncSt("live"); setSyncMsg("🟢 リアルタイム同期中");
-        })
-      .subscribe(status=>{
-        if(status==="SUBSCRIBED"){
-          setLiveOn(true); setSyncSt("live"); setSyncMsg("🟢 リアルタイム同期中");
-        }
-      });
+    try{
+      const sb=getSB(); if(!sb) return;
+      if(subRef.current){ try{ subRef.current.unsubscribe(); }catch(e){} }
+      subRef.current = sb.channel("duty_data_changes")
+        .on("postgres_changes",{event:"UPDATE",schema:"public",table:"duty_data"},
+          payload=>{
+            try{
+              if(savingRef.current) return;
+              const d=payload.new;
+              if(d.staff&&Array.isArray(d.staff)&&d.staff.length>0)   setStaff(d.staff);
+              if(d.sched&&Object.keys(d.sched).length>0)   setSched(d.sched);
+              if(d.wd_order&&Array.isArray(d.wd_order)&&d.wd_order.length>0) setWdO(d.wd_order);
+              if(d.we_order&&Array.isArray(d.we_order)&&d.we_order.length>0) setWeO(d.we_order);
+              note("🔄 他のメンバーがシフトを更新しました");
+              setSyncSt("live"); setSyncMsg("🟢 リアルタイム同期中");
+            }catch(e){ console.error("realtime payload error:",e); }
+          })
+        .subscribe(status=>{
+          if(status==="SUBSCRIBED"){
+            setLiveOn(true); setSyncSt("live"); setSyncMsg("🟢 リアルタイム同期中");
+          } else if(status==="CHANNEL_ERROR"){
+            setSyncSt("error"); setSyncMsg("⚠️ リアルタイム接続エラー");
+          }
+        });
+    }catch(e){
+      console.error("startRealtime error:",e);
+      setSyncSt("error"); setSyncMsg(`❌ ${e.message||"リアルタイム接続エラー"}`);
+    }
   }
 
   // 手動読み込み・保存（syncパネルのボタン用）
@@ -851,7 +869,35 @@ export default function App(){
             placeholder="eyJxxxxxx..."
             style={{width:"100%",padding:"11px 12px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:13,color:"#1C1C1E",outline:"none",boxSizing:"border-box",marginBottom:14}}/>
           {/* 接続ボタン */}
-          <button onClick={()=>{resetSB();loadFromSB();startRealtime();setSyncOpen(false);}}
+          <button onClick={async()=>{
+              resetSB();
+              setSyncMsg("接続中..."); setSyncSt("loading");
+              const sb=getSB();
+              if(!sb){ setSyncMsg("❌ URL・キーを確認してください"); setSyncSt("error"); return; }
+              try{
+                const {data,error}=await sb.from("duty_data").select("*").eq("id","main").single();
+                if(error) throw error;
+                const hasSBData=data?.staff&&Array.isArray(data.staff)&&data.staff.length>0;
+                if(hasSBData){
+                  setStaff(data.staff);
+                  if(data.sched) setSched(data.sched);
+                  if(data.wd_order&&data.wd_order.length) setWdO(data.wd_order);
+                  if(data.we_order&&data.we_order.length) setWeO(data.we_order);
+                  note("Supabaseから最新データを読み込みました");
+                } else {
+                  const {error:uErr}=await sb.from("duty_data").upsert({
+                    id:"main", staff, sched,
+                    wd_order:wdO, we_order:weO,
+                    updated_at:new Date().toISOString()
+                  });
+                  if(uErr) throw uErr;
+                  note("アプリのデータをSupabaseに保存しました");
+                }
+                startRealtime();
+                setSyncMsg("🟢 リアルタイム同期中"); setSyncSt("live");
+                setSyncOpen(false);
+              }catch(e){ setSyncMsg(`❌ ${e.message}`); setSyncSt("error"); }
+            }}
             disabled={!sbUrl||!sbKey}
             style={{width:"100%",padding:"13px 0",background:sbUrl&&sbKey?"#34C759":"#C7C7CC",color:"white",border:"none",borderRadius:14,cursor:sbUrl&&sbKey?"pointer":"not-allowed",fontSize:15,fontWeight:700,marginBottom:10}}>
             🟢 接続してリアルタイム同期を開始
