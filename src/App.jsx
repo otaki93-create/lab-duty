@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 // ─── localStorage ─────────────────────────────────────────────────
 const LS_KEY = "labDutyData_v2";
@@ -7,6 +8,16 @@ function lsSave(d){ try{ localStorage.setItem(LS_KEY,JSON.stringify(d)); }catch(
 function lsLoad(){ try{ const r=localStorage.getItem(LS_KEY); return r?JSON.parse(r):null; }catch(e){ return null; } }
 function lsSaveSB(d){ try{ localStorage.setItem(LS_SB,JSON.stringify(d)); }catch(e){} }
 function lsLoadSB(){ try{ const r=localStorage.getItem(LS_SB); return r?JSON.parse(r):null; }catch(e){ return null; } }
+
+// ─── Supabase クライアント ─────────────────────────────────────────
+let _sb = null;
+function getSB(){
+  const cfg = lsLoadSB();
+  if(!cfg?.url||!cfg?.key) return null;
+  if(!_sb) _sb = createClient(cfg.url, cfg.key);
+  return _sb;
+}
+function resetSB(){ _sb = null; }
 
 // ─── 祝日 ─────────────────────────────────────────────────────────
 const HOLIDAYS = new Set([
@@ -180,18 +191,26 @@ export default function App(){
   const [delConf,setDelConf]=useState(null);
   const [dWD,    setDWD   ]=useState(null);
   const [dWE,    setDWE   ]=useState(null);
-  const [syncSt, setSyncSt ]=useState("idle");
-  const [syncMsg,setSyncMsg]=useState("");
-  const [gasUrl, setGasUrl ]=useState(()=>{ try{ return lsLoadSB()?.gasUrl||""; }catch(e){ return ""; } });
-  const [autoSync,setAutoSync]=useState(()=>{ try{ return !!lsLoadSB()?.gasUrl; }catch(e){ return false; } });
+  const [syncSt,  setSyncSt ]=useState("idle"); // idle|loading|ok|error|live
+  const [syncMsg, setSyncMsg]=useState("");
+  const [sbUrl,   setSbUrl  ]=useState(()=>lsLoadSB()?.url||"");
+  const [sbKey,   setSbKey  ]=useState(()=>lsLoadSB()?.key||"");
+  const [liveOn,  setLiveOn ]=useState(false);
   const [clearConf,setClearConf]=useState(false);
-  const syncingRef=useRef(false);
+  const savingRef=useRef(false);
+  const subRef=useRef(null);
 
   function note(msg){setNotifs(p=>[{id:Date.now(),msg,time:new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})},...p].slice(0,20));}
 
+  // localStorage自動保存
   useEffect(()=>{ lsSave({staff,sched,wdO,weO}); },[staff,sched,wdO,weO]);
-  useEffect(()=>{ lsSaveSB({gasUrl}); },[gasUrl]);
-  useEffect(()=>{ if(gasUrl&&autoSync) autoLoad(); },[]);
+  // Supabase設定保存
+  useEffect(()=>{ lsSaveSB({url:sbUrl,key:sbKey}); },[sbUrl,sbKey]);
+  // 起動時にSupabase接続
+  useEffect(()=>{
+    if(sbUrl&&sbKey){ loadFromSB(); startRealtime(); }
+    return ()=>{ if(subRef.current){ subRef.current.unsubscribe(); } };
+  },[]);
 
   function chMo(d){
     let nm=mo+d,ny=yr;
@@ -209,7 +228,7 @@ export default function App(){
     const keys=["nisoku","junya","oncallA","oncallB"];
     const names=keys.map(k=>{const m=staff.find(x=>x.id===editData[k]);return m?`${SHIFT_DEFS[k].icon}${m.name}`:null;}).filter(Boolean).join(" ");
     note(`${selDs} 更新 (${names})`);setEditOpen(false);
-    if(gasUrl&&autoSync) autoSave({sched:newSched});
+    saveToDB({sched:newSched});
   }
 
   function startAdd(){setEditMember(null);setMForm({name:"",color:COLOR_OPTIONS[staff.length%COLOR_OPTIONS.length],"shift班":"A","拘束分類":"A"});}
@@ -229,7 +248,7 @@ export default function App(){
     setStaff(newStaff);
     setEditMember(null);
     setMForm({name:"",color:COLOR_OPTIONS[0],"shift班":"A","拘束分類":"A"});
-    if(gasUrl&&autoSync) autoSave({staff:newStaff});
+    saveToDB({staff:newStaff});
   }
 
   function delMember(id){
@@ -255,19 +274,19 @@ export default function App(){
     const ns={...sched,...genSchedWD(yr,mo,dWD,staff)};
     setWdO(dWD);setSched(ns);
     note("平日シフトのマスターを適用しました");
-    if(gasUrl&&autoSync) autoSave({wdO:dWD,sched:ns});
+    saveToDB({wdO:dWD,sched:ns});
   }
   function saveMasterWE(){
     const ns={...sched,...genSchedWE(yr,mo,dWE,staff)};
     setWeO(dWE);setSched(ns);
     note("土日祝シフトのマスターを適用しました");
-    if(gasUrl&&autoSync) autoSave({weO:dWE,sched:ns});
+    saveToDB({weO:dWE,sched:ns});
   }
   function saveMaster(){
     const ns={...sched,...genSched(yr,mo,dWD,dWE,staff)};
     setWdO(dWD);setWeO(dWE);setSched(ns);
     note("マスターを更新し今月を再生成しました");closeMaster();
-    if(gasUrl&&autoSync) autoSave({wdO:dWD,weO:dWE,sched:ns});
+    saveToDB({wdO:dWD,weO:dWE,sched:ns});
   }
 
   function clearAllShifts(){
@@ -276,50 +295,73 @@ export default function App(){
     const ns={...sched,...empty};
     setSched(ns);
     note(`${yr}年${MJ[mo]}のシフトをクリアしました`);setClearConf(false);
-    if(gasUrl&&autoSync) autoSave({sched:ns});
+    saveToDB({sched:ns});
   }
 
-  async function autoLoad(){
-    if(syncingRef.current)return; syncingRef.current=true; setSyncSt("loading");
+  // ── Supabase: データ読み込み ──
+  async function loadFromSB(){
+    const sb=getSB(); if(!sb) return;
+    setSyncSt("loading"); setSyncMsg("読み込み中...");
     try{
-      const r=await fetch(`${gasUrl.trim()}?action=load`);const j=await r.json();
-      if(j.error)throw new Error(j.error);
-      if(j.staff)setStaff(j.staff); if(j.sched)setSched(p=>({...p,...j.sched}));
-      if(j.wdOrder)setWdO(j.wdOrder); if(j.weOrder)setWeO(j.weOrder);
-      setSyncSt("ok");setSyncMsg("✅ 起動時に読み込みました");note("起動時に自動読み込みしました");
-    }catch(e){setSyncSt("error");setSyncMsg("⚠️ 自動読み込み失敗");}
-    finally{syncingRef.current=false;}
+      const {data,error}=await sb.from("duty_data").select("*").eq("id","main").single();
+      if(error) throw error;
+      if(data.staff)   setStaff(data.staff);
+      if(data.sched)   setSched(data.sched);
+      if(data.wd_order&&data.wd_order.length) setWdO(data.wd_order);
+      if(data.we_order&&data.we_order.length) setWeO(data.we_order);
+      lsSave({staff:data.staff||staff, sched:data.sched||sched, wdO:data.wd_order||wdO, weO:data.we_order||weO});
+      setSyncSt("ok"); setSyncMsg("✅ 読み込み完了");
+      note("Supabaseから最新データを読み込みました");
+    }catch(e){ setSyncSt("error"); setSyncMsg(`❌ ${e.message}`); }
   }
-  async function autoSave(ov={}){
-    if(!gasUrl.trim()||syncingRef.current)return;
-    syncingRef.current=true; setSyncSt("loading");
+
+  // ── Supabase: データ保存 ──
+  async function saveToDB(ov={}){
+    const sb=getSB(); if(!sb) return;
+    if(savingRef.current) return;
+    savingRef.current=true; setSyncSt("loading");
     try{
-      const r=await fetch(gasUrl.trim(),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"save",staff:ov.staff||staff,sched:ov.sched||sched,wdOrder:ov.wdO||wdO,weOrder:ov.weO||weO})});
-      const j=await r.json();if(j.error)throw new Error(j.error);
-      setSyncSt("ok");setSyncMsg("✅ 自動保存しました");
-    }catch(e){setSyncSt("error");setSyncMsg("⚠️ 自動保存失敗");}
-    finally{syncingRef.current=false;}
+      const payload={
+        id:"main",
+        staff:    ov.staff  ||staff,
+        sched:    ov.sched  ||sched,
+        wd_order: ov.wdO    ||wdO,
+        we_order: ov.weO    ||weO,
+        updated_at: new Date().toISOString(),
+      };
+      const {error}=await sb.from("duty_data").upsert(payload);
+      if(error) throw error;
+      setSyncSt("live"); setSyncMsg("✅ 保存・同期中");
+    }catch(e){ setSyncSt("error"); setSyncMsg(`❌ ${e.message}`); }
+    finally{ savingRef.current=false; }
   }
-  async function doLoad(){
-    if(!gasUrl.trim()){setSyncMsg("URLを入力してください");setSyncSt("error");return;}
-    setSyncSt("loading");setSyncMsg("読み込み中...");
-    try{
-      const r=await fetch(`${gasUrl.trim()}?action=load`);const j=await r.json();
-      if(j.error)throw new Error(j.error);
-      if(j.staff)setStaff(j.staff); if(j.sched)setSched(j.sched);
-      if(j.wdOrder)setWdO(j.wdOrder); if(j.weOrder)setWeO(j.weOrder);
-      setSyncSt("ok");setSyncMsg("✅ 読み込み完了");note("スプレッドシートから読み込みました");
-    }catch(e){setSyncSt("error");setSyncMsg(`❌ ${e.message}`);}
+
+  // ── Supabase: リアルタイム購読 ──
+  function startRealtime(){
+    const sb=getSB(); if(!sb) return;
+    if(subRef.current) subRef.current.unsubscribe();
+    subRef.current = sb.channel("duty_data_changes")
+      .on("postgres_changes",{event:"UPDATE",schema:"public",table:"duty_data"},
+        payload=>{
+          if(savingRef.current) return; // 自分の保存は無視
+          const d=payload.new;
+          if(d.staff)   setStaff(d.staff);
+          if(d.sched)   setSched(d.sched);
+          if(d.wd_order&&d.wd_order.length) setWdO(d.wd_order);
+          if(d.we_order&&d.we_order.length) setWeO(d.we_order);
+          note("🔄 他のメンバーがシフトを更新しました");
+          setSyncSt("live"); setSyncMsg("🟢 リアルタイム同期中");
+        })
+      .subscribe(status=>{
+        if(status==="SUBSCRIBED"){
+          setLiveOn(true); setSyncSt("live"); setSyncMsg("🟢 リアルタイム同期中");
+        }
+      });
   }
-  async function doSave(){
-    if(!gasUrl.trim()){setSyncMsg("URLを入力してください");setSyncSt("error");return;}
-    setSyncSt("loading");setSyncMsg("保存中...");
-    try{
-      const r=await fetch(gasUrl.trim(),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"save",staff,sched,wdOrder:wdO,weOrder:weO})});
-      const j=await r.json();if(j.error)throw new Error(j.error);
-      setSyncSt("ok");setSyncMsg("✅ 保存完了");note("スプレッドシートに保存しました");
-    }catch(e){setSyncSt("error");setSyncMsg(`❌ ${e.message}`);}
-  }
+
+  // 手動読み込み・保存（syncパネルのボタン用）
+  async function doLoad(){ await loadFromSB(); }
+  async function doSave(){ await saveToDB(); note("Supabaseに保存しました"); }
 
   const days=daysInMonth(yr,mo);
   const first=firstDow(yr,mo);
@@ -338,7 +380,7 @@ export default function App(){
     Object.entries(e).forEach(([k,sid])=>{if(stats[sid]&&stats[sid][k]!==undefined)stats[sid][k]=(stats[sid][k]||0)+1;});
   });
 
-  const syncColor=syncSt==="ok"?"#34C759":syncSt==="error"?"#FF3B30":syncSt==="loading"?"#FF9500":"#8E8E93";
+  const syncColor=syncSt==="live"?"#34C759":syncSt==="ok"?"#34C759":syncSt==="error"?"#FF3B30":syncSt==="loading"?"#FF9500":"#8E8E93";
 
   // 拘束は手動選択のため自動判定なし
 
@@ -356,7 +398,7 @@ export default function App(){
             </div>
           </div>
           <div style={{display:"flex",gap:6}}>
-            <HBtn label={syncSt==="loading"?"⏳":"☁️"} color={syncColor} onClick={()=>setSyncOpen(true)}/>
+            <HBtn label={syncSt==="loading"?"⏳":syncSt==="live"?"🟢":"☁️"} color={syncColor} onClick={()=>setSyncOpen(true)}/>
             <HBtn label="📂" color="#FF9500" onClick={()=>document.getElementById('importFile').click()}/>
             <HBtn label="🗑️" color="#FF3B30" onClick={()=>setClearConf(true)}/>
             <HBtn label="設定" color="#007AFF" onClick={()=>{setSettOpen(true);setSettTab("member");startAdd();}}/>
@@ -787,29 +829,39 @@ export default function App(){
 
       {/* ━━━━━━ 同期パネル ━━━━━━ */}
       {syncOpen&&(
-        <Sheet onClose={()=>setSyncOpen(false)} title="☁️ スプレッドシート連携">
-          <div style={{background:"#F9F9FB",borderRadius:12,padding:"12px 14px",marginBottom:12,fontSize:12,color:"#3C3C43",lineHeight:1.9,border:"1px solid #E5E5EA"}}>
-            <div style={{fontWeight:700,color:"#1C1C1E",marginBottom:4}}>設定手順</div>
-            <div>1. Googleスプレッドシートを新規作成</div>
-            <div>2. 拡張機能 → Apps Script → gas-script.gs を貼り付け</div>
-            <div>3. デプロイ → 全員に公開 → URLをコピー</div>
+        <Sheet onClose={()=>setSyncOpen(false)} title="🟢 リアルタイム同期設定">
+          {/* 接続状態 */}
+          <div style={{background:liveOn?"#E8F5E9":"#F9F9FB",borderRadius:12,padding:"12px 14px",marginBottom:14,border:`1px solid ${liveOn?"#34C759":"#E5E5EA"}`}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{width:10,height:10,borderRadius:"50%",background:liveOn?"#34C759":"#C7C7CC",flexShrink:0}}/>
+              <div style={{fontSize:14,fontWeight:700,color:liveOn?"#2E7D32":"#8E8E93"}}>
+                {liveOn?"リアルタイム同期中 🎉":"未接続"}
+              </div>
+            </div>
+            {liveOn&&<div style={{fontSize:11,color:"#4CAF50",marginTop:4}}>誰かが編集すると全員の画面が自動更新されます</div>}
           </div>
-          <input value={gasUrl} onChange={e=>setGasUrl(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec"
+          {/* URL入力 */}
+          <div style={{fontSize:12,color:"#8E8E93",marginBottom:5}}>Project URL</div>
+          <input value={sbUrl} onChange={e=>{setSbUrl(e.target.value);resetSB();}}
+            placeholder="https://xxxxxx.supabase.co"
             style={{width:"100%",padding:"11px 12px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:13,color:"#1C1C1E",outline:"none",boxSizing:"border-box",marginBottom:10}}/>
-          {/* 自動同期トグル */}
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"#F9F9FB",borderRadius:10,padding:"10px 12px",marginBottom:10,border:"1px solid #E5E5EA"}}>
-            <div>
-              <div style={{fontSize:13,fontWeight:600,color:"#1C1C1E"}}>自動同期</div>
-              <div style={{fontSize:11,color:"#8E8E93"}}>起動時読込・保存時自動送信</div>
-            </div>
-            <div onClick={()=>setAutoSync(p=>!p)} style={{width:48,height:26,borderRadius:13,background:autoSync?"#34C759":"#E5E5EA",cursor:"pointer",position:"relative",transition:"background 0.2s",flexShrink:0}}>
-              <div style={{position:"absolute",top:2,left:autoSync?22:2,width:22,height:22,borderRadius:"50%",background:"white",boxShadow:"0 1px 4px rgba(0,0,0,0.2)",transition:"left 0.2s"}}/>
-            </div>
-          </div>
-          {syncMsg&&<div style={{padding:"8px 10px",borderRadius:9,marginBottom:10,fontSize:12,fontWeight:600,background:syncSt==="ok"?"#E8F5E9":syncSt==="error"?"#FFEBEE":"#FFFDE7",color:syncSt==="ok"?"#2E7D32":syncSt==="error"?"#C62828":"#F57F17"}}>{syncMsg}</div>}
+          {/* APIキー入力 */}
+          <div style={{fontSize:12,color:"#8E8E93",marginBottom:5}}>anon public key</div>
+          <input value={sbKey} onChange={e=>{setSbKey(e.target.value);resetSB();}}
+            placeholder="eyJxxxxxx..."
+            style={{width:"100%",padding:"11px 12px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:13,color:"#1C1C1E",outline:"none",boxSizing:"border-box",marginBottom:14}}/>
+          {/* 接続ボタン */}
+          <button onClick={()=>{resetSB();loadFromSB();startRealtime();setSyncOpen(false);}}
+            disabled={!sbUrl||!sbKey}
+            style={{width:"100%",padding:"13px 0",background:sbUrl&&sbKey?"#34C759":"#C7C7CC",color:"white",border:"none",borderRadius:14,cursor:sbUrl&&sbKey?"pointer":"not-allowed",fontSize:15,fontWeight:700,marginBottom:10}}>
+            🟢 接続してリアルタイム同期を開始
+          </button>
+          {syncMsg&&<div style={{padding:"8px 10px",borderRadius:9,marginBottom:10,fontSize:12,fontWeight:600,
+            background:syncSt==="live"||syncSt==="ok"?"#E8F5E9":syncSt==="error"?"#FFEBEE":"#FFFDE7",
+            color:syncSt==="live"||syncSt==="ok"?"#2E7D32":syncSt==="error"?"#C62828":"#F57F17"}}>{syncMsg}</div>}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-            <button onClick={doLoad} disabled={syncSt==="loading"} style={{...cancelBtn,color:"#007AFF"}}>📥 読み込む</button>
-            <button onClick={doSave} disabled={syncSt==="loading"} style={primaryBtn}>📤 保存する</button>
+            <button onClick={doLoad} disabled={syncSt==="loading"} style={{...cancelBtn,color:"#007AFF",fontSize:13}}>📥 手動読み込み</button>
+            <button onClick={doSave} disabled={syncSt==="loading"} style={{...primaryBtn,fontSize:13}}>📤 手動保存</button>
           </div>
         </Sheet>
       )}
