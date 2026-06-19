@@ -34,14 +34,7 @@ function isHol(ds){ return HOLIDAYS.has(ds)||new Date(ds).getDay()===0||new Date
 
 // ─── 定数 ─────────────────────────────────────────────────────────
 const MAX_STAFF = 30;
-const INITIAL_STAFF = [
-  {id:1,name:"田中 一郎",color:"#007AFF",shift班:"A",拘束分類:"A"},
-  {id:2,name:"佐藤 花子",color:"#34C759",shift班:"A",拘束分類:"B"},
-  {id:3,name:"山田 太郎",color:"#FF9500",shift班:"B",拘束分類:"A"},
-  {id:4,name:"鈴木 美咲",color:"#FF3B30",shift班:"B",拘束分類:"B"},
-  {id:5,name:"中村 健二",color:"#AF52DE",shift班:"A",拘束分類:"A"},
-  {id:6,name:"伊藤 直子",color:"#FF2D55",shift班:"B",拘束分類:"B"},
-];
+const INITIAL_STAFF = []; // インポートまたはSupabaseから読み込み
 const COLOR_OPTIONS=[
   "#007AFF","#34C759","#FF9500","#FF3B30","#AF52DE","#FF2D55",
   "#5AC8FA","#4CD964","#FFCC00","#FF6B6B","#BF5AF2","#FF375F",
@@ -429,15 +422,28 @@ export default function App(){
               reader.onload=ev=>{
                 try{
                   const data=JSON.parse(ev.target.result);
-                  if(data.staff) setStaff(data.staff);
-                  if(data.sched) setSched(prev=>({...prev,...data.sched}));
-                  if(data.wdO&&data.wdO.length) setWdO(data.wdO);
-                  if(data.weO&&data.weO.length) setWeO(data.weO);
-                  note(`📂 インポート完了：${data.staff?.length||0}名・${Object.keys(data.sched||{}).length}日分のデータを読み込みました`);
+                  const schedDays=Object.keys(data.sched||{}).length;
+                  // スタッフが既にいる場合は確認
+                  const hasStaff=staff.length>0;
+                  if(hasStaff){
+                    // スタッフは保持、スケジュールのみ追加（既存データに上書きマージ）
+                    if(data.sched) setSched(prev=>({...prev,...data.sched}));
+                    note(`📂 シフト追加インポート完了：${schedDays}日分を追加しました（スタッフ情報は保持）`);
+                  } else {
+                    // 初回インポート：全データを読み込み
+                    if(data.staff) setStaff(data.staff);
+                    if(data.sched) setSched(data.sched);
+                    if(data.wdO&&data.wdO.length) setWdO(data.wdO);
+                    if(data.weO&&data.weO.length) setWeO(data.weO);
+                    note(`📂 初回インポート完了：${data.staff?.length||0}名・${schedDays}日分を読み込みました`);
+                  }
+                  // Supabaseに接続中なら自動保存
+                  const sb=getSB();
+                  if(sb) setTimeout(()=>saveToDB(),500);
                 }catch(err){ note("❌ インポート失敗：JSONファイルの形式が正しくありません"); }
               };
               reader.readAsText(file);
-              e.target.value=""; // リセット
+              e.target.value="";
             }}/>
         </div>
         <div style={{display:"flex"}}>
